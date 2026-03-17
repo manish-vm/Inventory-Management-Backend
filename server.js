@@ -18,12 +18,24 @@ const chatbotRoutes = require('./routes/chatbot');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/inventory-billing';
+const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
-app.use(cors());
+const allowedOrigins = ['https://inventory-management-frontend-rosy.vercel.app'];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 
 // Request logging middleware
 app.use((req, res, next) => {
