@@ -43,7 +43,9 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 
-
+app.get('/', (req, res) => {
+  res.send('Welcome to the Inventory and Billing System API - Backend Running Successfully!');
+});
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
