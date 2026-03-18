@@ -65,5 +65,9 @@ router.put('/subcategories/:id', auth, adminOnly, productsController.updateSubca
 // @desc    Delete subcategory (Admin only)
 router.delete('/subcategories/:id', auth, adminOnly, productsController.deleteSubcategory);
 
+// @route   GET /api/products/:id/analytics
+// @desc    Get product analytics popup data
+router.get('/:id/analytics', auth, authAndEmployee, productsController.getProductAnalytics);
+
 module.exports = router;
 

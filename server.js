@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
-const allowedOrigins = ['https://inventory-management-frontend-rosy.vercel.app' , 'http://localhost:3000'];
+const allowedOrigins = ['https://inventory-management-frontend-rosy.vercel.app', 'http://localhost:3000'];
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
@@ -88,7 +88,6 @@ const startServer = async () => {
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
-      console.log(`Health check: http://localhost:${PORT}/api/health`);
     });
   } catch (error) {
     console.error('Failed to connect to MongoDB:', error);

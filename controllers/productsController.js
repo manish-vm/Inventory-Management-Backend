@@ -1,6 +1,8 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Subcategory = require('../models/Subcategory');
+const Invoice = require('../models/Invoice');
+const mongoose = require('mongoose');
 
 // @desc    Get all products (with optional search/filter)
 // @route   GET /api/products
@@ -294,6 +296,87 @@ exports.deleteSubcategory = async (req, res) => {
     }
     res.json({ message: 'Subcategory deleted successfully' });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// @desc    Get product analytics (sold count, dates, customers, interest)
+// @route   GET /api/products/:id/analytics
+exports.getProductAnalytics = async (req, res) => {
+  try {
+    const ObjectId = mongoose.Types.ObjectId;
+    const productId = req.params.id;
+    const product = await Product.findById(productId).populate('category', 'name').populate('subcategory', 'name');
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    // Total sold all time
+    const totalSoldResult = await Invoice.aggregate([
+      { $unwind: '$items' },
+      { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
+      { $group: { _id: null, totalSold: { $sum: '$items.quantity' } } }
+    ]);
+    const totalSold = totalSoldResult[0]?.totalSold || 0;
+
+    // Sales history for chart (last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const salesHistory = await Invoice.aggregate([
+      { $unwind: '$items' },
+      { $match: { 
+        'items.productId': new ObjectId(productId), 
+        status: 'completed',
+        createdAt: { $gte: thirtyDaysAgo }
+      } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          sold: { $sum: '$items.quantity' },
+          revenue: { $sum: '$items.total' }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Unique customers
+    const uniqueCustomers = await Invoice.distinct('customerName', {
+      items: { $elemMatch: { productId: new ObjectId(productId) } },
+      status: 'completed'
+    });
+
+    // Total revenue all time
+    const totalRevenueResult = await Invoice.aggregate([
+      { $unwind: '$items' },
+      { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
+      { $group: { _id: null, totalRevenue: { $sum: '$items.total' } } }
+    ]);
+    const totalRevenue = totalRevenueResult[0]?.totalRevenue || 0;
+
+    // Recent activity (last 10 invoices)
+    const recentActivity = await Invoice.find({
+      items: { $elemMatch: { productId: new ObjectId(productId) } },
+      status: 'completed'
+    })
+    .select('createdAt invoiceNumber customerName totalAmount')
+    .sort({ createdAt: -1 })
+    .limit(10);
+
+    res.json({
+      product,
+        analytics: {
+        totalSold,
+        totalRevenue,
+        customersBought: uniqueCustomers.length,
+        customerInterest: uniqueCustomers.length > 0 ? Math.round((uniqueCustomers.length / 10) * 100) || 0 : 0,
+        firstStockDate: product.createdAt,
+        lastActivity: product.updatedAt,
+        salesHistory: salesHistory.map(h => ({ date: h._id, sold: h.sold, revenue: h.revenue })),
+        recentActivity
+      }
+    });
+  } catch (error) {
+    console.error('Analytics error:', error);
     res.status(500).json({ error: error.message });
   }
 };
