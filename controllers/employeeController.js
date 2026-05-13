@@ -5,7 +5,7 @@ const Product = require("../models/Product");
 
 exports.createEmployee = async (req, res) => {
   try {
-    const { password, canLogin, ...employeeData } = req.body;
+    const { password, canLogin, manufacturingLevel, ...employeeData } = req.body;
     
     // Ensure employee belongs to admin's dealer
     employeeData.dealerId = req.user.dealerId;
@@ -19,6 +19,7 @@ exports.createEmployee = async (req, res) => {
       password: password,
       role: 'employee',
       dealerId: req.user.dealerId,
+      manufacturingLevel: manufacturingLevel || 1,
       isActive: true
     });
 
@@ -33,7 +34,7 @@ exports.getAdminEmployees = async (req, res) => {
     const employees = await User.find({
       role: 'employee',
       dealerId: req.user.dealerId
-    }).select('name email phone address username isActive createdAt').sort({ createdAt: -1 });
+    }).select('name email phone address username isActive manufacturingLevel createdAt').sort({ createdAt: -1 });
     res.json(employees);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -51,13 +52,14 @@ exports.updateEmployee = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const { password, name, email, phone, address, isActive } = req.body;
+    const { password, name, email, phone, address, isActive, manufacturingLevel } = req.body;
     
     if (name) employee.name = name;
     if (email) employee.email = email;
     if (phone) employee.phone = phone;
     if (address) employee.address = address;
     if (isActive !== undefined) employee.isActive = isActive;
+    if (manufacturingLevel !== undefined) employee.manufacturingLevel = manufacturingLevel;
     if (password) employee.password = password;
 
     await employee.save();

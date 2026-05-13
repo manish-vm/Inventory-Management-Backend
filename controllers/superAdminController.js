@@ -269,12 +269,29 @@ exports.resetAdminPassword = async (req, res) => {
 // @route   POST /api/superadmin/dealers
 exports.createDealer = async (req, res) => {
   try {
-    const { dealerName, address, contactPerson, phone, email, adminId, subscriptionPlan } = req.body;
+    const { dealerName, address, contactPerson, phone, email, adminId, subscriptionPlan, vendorType, vendorCode } = req.body;
 
-    // Check if dealer email already exists
+    if (!dealerName || !address || !contactPerson || !phone || !email) {
+      return res.status(400).json({ message: 'Missing required fields: dealerName, address, contactPerson, phone, email are required' });
+    }
+
     const existingDealer = await Dealer.findOne({ email });
     if (existingDealer) {
       return res.status(400).json({ message: 'Dealer with this email already exists' });
+    }
+
+    if (adminId) {
+      const adminUser = await User.findById(adminId);
+      if (!adminUser) {
+        return res.status(400).json({ message: 'Admin user not found' });
+      }
+    }
+
+    if (subscriptionPlan) {
+      const plan = await SubscriptionPlan.findById(subscriptionPlan);
+      if (!plan) {
+        return res.status(400).json({ message: 'Subscription plan not found' });
+      }
     }
 
     const dealer = new Dealer({
@@ -283,33 +300,42 @@ exports.createDealer = async (req, res) => {
       contactPerson,
       phone,
       email,
-      adminId,
-      subscriptionPlan,
+      adminId: adminId || null,
+      subscriptionPlan: subscriptionPlan || null,
+      vendorType: vendorType || 'get_manufacturing',
+      vendorCode,
       status: 'active'
     });
 
     await dealer.save();
 
-    // If adminId provided, update user with dealerId
     if (adminId) {
       await User.findByIdAndUpdate(adminId, { dealerId: dealer._id });
     }
 
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user._id,
-      role: req.user.role,
-      action: 'CREATE_DEALER',
-      description: `Created dealer: ${dealer.dealerName}`,
-      ipAddress: req.ip || req.connection.remoteAddress,
-      metadata: { dealerId: dealer._id }
-    });
+    const populatedDealer = await Dealer.findById(dealer._id)
+      .populate('adminId', 'name email phone isActive')
+      .populate('subscriptionPlan', 'planName price duration');
+
+    try {
+      await ActivityLog.create({
+        userId: req.user._id,
+        role: req.user.role,
+        action: 'CREATE_DEALER',
+        description: `Created dealer: ${dealer.dealerName}`,
+        ipAddress: req.ip || req.connection.remoteAddress,
+        metadata: { dealerId: dealer._id }
+      });
+    } catch (logErr) {
+      console.error('Activity log error (non-critical):', logErr.message);
+    }
 
     res.status(201).json({
       message: 'Dealer created successfully',
-      dealer
+      dealer: populatedDealer
     });
   } catch (error) {
+    console.error('Create dealer error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -324,6 +350,7 @@ exports.getDealers = async (req, res) => {
       .sort({ createdAt: -1 });
     res.json(dealers);
   } catch (error) {
+    console.error('Get dealers error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -495,6 +522,7 @@ exports.getPlans = async (req, res) => {
     const plans = await SubscriptionPlan.find().sort({ createdAt: -1 });
     res.json(plans);
   } catch (error) {
+    console.error('Get plans error:', error);
     res.status(500).json({ error: error.message });
   }
 };

@@ -36,6 +36,15 @@ const dealerSchema = new mongoose.Schema({
     type: String,
     enum: ['active', 'suspended'],
     default: 'active'
+  },
+  vendorType: {
+    type: String,
+    enum: ['base_manufacturing', 'get_manufacturing'],
+    default: 'get_manufacturing'
+  },
+  vendorCode: {
+    type: String,
+    trim: true
   }
 }, { timestamps: true });
 

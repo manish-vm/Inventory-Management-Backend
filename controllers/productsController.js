@@ -3,6 +3,8 @@ const Category = require('../models/Category');
 const Subcategory = require('../models/Subcategory');
 const Invoice = require('../models/Invoice');
 const mongoose = require('mongoose');
+const Brand = require('../models/Brand');
+const BrandModel = require('../models/BrandModel');
 
 // @desc    Get all products (with optional search/filter)
 // @route   GET /api/products
@@ -61,13 +63,13 @@ exports.getProductById = async (req, res) => {
 // @route   GET /api/products/code/:code
 exports.getProductByCode = async (req, res) => {
   try {
-    const product = await Product.findOne({ 
+    const product = await Product.findOne({
       productCode: req.params.code,
-      isDeleted: false 
+      isDeleted: false
     })
       .populate('category', 'name')
       .populate('subcategory', 'name');
-    
+
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -77,14 +79,56 @@ exports.getProductByCode = async (req, res) => {
   }
 };
 
+// Helper: resolve brand/model IDs to strings
+const resolveBrandModelStrings = async ({ brandId, modelId, brandName, model }) => {
+  // If IDs provided, prefer them
+  if (brandId && modelId) {
+    const brand = await Brand.findById(brandId);
+    const m = await BrandModel.findById(modelId);
+
+    if (!brand) throw new Error('Brand not found');
+    if (!m) throw new Error('Model not found');
+    if (m.brandId?.toString() !== brand._id.toString()) {
+      throw new Error('Model does not belong to the selected brand');
+    }
+
+    return {
+      brandName: brand.name,
+      model: m.name
+    };
+  }
+
+  // Backward compatibility: allow strings if IDs not provided
+  return {
+    brandName: brandName ?? null,
+    model: model ?? null
+  };
+};
+
 // @desc    Create new product (Admin only)
 // @route   POST /api/products
 exports.createProduct = async (req, res) => {
   try {
-    const { productName, productCode, category, subcategory, stockQuantity, minStockLevel, basePrice, sellingPrice } = req.body;
+    const {
+      productName,
+      productCode,
+      brandId,
+      modelId,
+      brandName,
+      model,
+      category,
+      subcategory,
+      stockQuantity,
+      minStockLevel,
+      basePrice,
+      sellingPrice
+    } = req.body;
 
-    // Check if product code already exists - in ANY product (including deleted)
-    // This ensures deleted product codes are never reused
+    if (!productName) {
+      return res.status(400).json({ message: 'productName is required' });
+    }
+
+    // Ensure uniqueness even after deletion
     if (productCode) {
       const existingProduct = await Product.findOne({ productCode });
       if (existingProduct) {
@@ -92,15 +136,19 @@ exports.createProduct = async (req, res) => {
       }
     }
 
+    const resolved = await resolveBrandModelStrings({ brandId, modelId, brandName, model });
+
     const product = new Product({
       productName,
-      productCode, // Will be auto-generated if not provided (always unique, never reused)
+      productCode, // Will be auto-generated if not provided
       category,
       subcategory,
       stockQuantity: stockQuantity || 0,
       minStockLevel: minStockLevel || 5,
       basePrice,
-      sellingPrice
+      sellingPrice,
+      brandName: resolved.brandName,
+      model: resolved.model
     });
 
     await product.save();
@@ -114,14 +162,24 @@ exports.createProduct = async (req, res) => {
 // @route   PUT /api/products/:id
 exports.updateProduct = async (req, res) => {
   try {
-    const { productName, productCode, category, subcategory, stockQuantity, minStockLevel, basePrice, sellingPrice } = req.body;
+    const {
+      productName,
+      productCode,
+      brandId,
+      modelId,
+      category,
+      subcategory,
+      stockQuantity,
+      minStockLevel,
+      basePrice,
+      sellingPrice
+    } = req.body;
 
     const product = await Product.findById(req.params.id);
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    // Check if productCode is being changed and if it already exists
     if (productCode && productCode !== product.productCode) {
       const existingProduct = await Product.findOne({ productCode });
       if (existingProduct) {
@@ -137,6 +195,13 @@ exports.updateProduct = async (req, res) => {
     if (minStockLevel !== undefined) product.minStockLevel = minStockLevel;
     if (basePrice !== undefined) product.basePrice = basePrice;
     if (sellingPrice !== undefined) product.sellingPrice = sellingPrice;
+
+    // Update brand/model only if IDs provided
+    if (brandId && modelId) {
+      const resolved = await resolveBrandModelStrings({ brandId, modelId });
+      product.brandName = resolved.brandName;
+      product.model = resolved.model;
+    }
 
     await product.save();
     res.json(product);
@@ -166,8 +231,8 @@ exports.getLowStockProducts = async (req, res) => {
     const products = await Product.find({
       $expr: { $lte: ['$stockQuantity', '$minStockLevel'] }
     })
-    .populate('category', 'name')
-    .populate('subcategory', 'name');
+      .populate('category', 'name')
+      .populate('subcategory', 'name');
     res.json(products);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -252,13 +317,12 @@ exports.getSubcategories = async (req, res) => {
 exports.createSubcategory = async (req, res) => {
   try {
     const { name, category, description } = req.body;
-    
-    // Validate category exists
+
     const categoryExists = await Category.findById(category);
     if (!categoryExists) {
       return res.status(404).json({ message: 'Category not found' });
     }
-    
+
     const subcategory = new Subcategory({ name, category, description });
     await subcategory.save();
     res.status(201).json(subcategory);
@@ -306,12 +370,14 @@ exports.getProductAnalytics = async (req, res) => {
   try {
     const ObjectId = mongoose.Types.ObjectId;
     const productId = req.params.id;
-    const product = await Product.findById(productId).populate('category', 'name').populate('subcategory', 'name');
+    const product = await Product.findById(productId)
+      .populate('category', 'name')
+      .populate('subcategory', 'name');
+
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    // Total sold all time
     const totalSoldResult = await Invoice.aggregate([
       { $unwind: '$items' },
       { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
@@ -319,16 +385,17 @@ exports.getProductAnalytics = async (req, res) => {
     ]);
     const totalSold = totalSoldResult[0]?.totalSold || 0;
 
-    // Sales history for chart (last 30 days)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const salesHistory = await Invoice.aggregate([
       { $unwind: '$items' },
-      { $match: { 
-        'items.productId': new ObjectId(productId), 
-        status: 'completed',
-        createdAt: { $gte: thirtyDaysAgo }
-      } },
+      {
+        $match: {
+          'items.productId': new ObjectId(productId),
+          status: 'completed',
+          createdAt: { $gte: thirtyDaysAgo }
+        }
+      },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -339,13 +406,11 @@ exports.getProductAnalytics = async (req, res) => {
       { $sort: { _id: 1 } }
     ]);
 
-    // Unique customers
     const uniqueCustomers = await Invoice.distinct('customerName', {
       items: { $elemMatch: { productId: new ObjectId(productId) } },
       status: 'completed'
     });
 
-    // Total revenue all time
     const totalRevenueResult = await Invoice.aggregate([
       { $unwind: '$items' },
       { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
@@ -353,22 +418,23 @@ exports.getProductAnalytics = async (req, res) => {
     ]);
     const totalRevenue = totalRevenueResult[0]?.totalRevenue || 0;
 
-    // Recent activity (last 10 invoices)
     const recentActivity = await Invoice.find({
       items: { $elemMatch: { productId: new ObjectId(productId) } },
       status: 'completed'
     })
-    .select('createdAt invoiceNumber customerName totalAmount')
-    .sort({ createdAt: -1 })
-    .limit(10);
+      .select('createdAt invoiceNumber customerName totalAmount')
+      .sort({ createdAt: -1 })
+      .limit(10);
 
     res.json({
       product,
-        analytics: {
+      analytics: {
         totalSold,
         totalRevenue,
         customersBought: uniqueCustomers.length,
-        customerInterest: uniqueCustomers.length > 0 ? Math.round((uniqueCustomers.length / 10) * 100) || 0 : 0,
+        customerInterest: uniqueCustomers.length > 0
+          ? Math.round((uniqueCustomers.length / 10) * 100) || 0
+          : 0,
         firstStockDate: product.createdAt,
         lastActivity: product.updatedAt,
         salesHistory: salesHistory.map(h => ({ date: h._id, sold: h.sold, revenue: h.revenue })),

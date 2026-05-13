@@ -1,3 +1,5 @@
+require('node:dns').setServers(['8.8.8.8', '1.1.1.1']);
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -14,6 +16,16 @@ const superAdminRoutes = require('./routes/superadmin');
 const notificationRoutes = require('./routes/notifications');
 const employeeRoutes = require('./routes/employees');
 const chatbotRoutes = require('./routes/chatbot');
+const productMasterRoutes = require('./routes/productMaster');
+const qrCodeRoutes = require('./routes/qrCode');
+const manufacturingConfigRoutes = require('./routes/manufacturingConfig');
+const rawMaterialRoutes = require('./routes/rawMaterial');
+const productionLogRoutes = require('./routes/productionLog');
+const processingStageRoutes = require('./routes/processingStage');
+const assemblyRoutes = require('./routes/assembly');
+const brandModelRoutes = require('./routes/brandModel');
+const ManufacturingConfig = require('./models/ManufacturingConfig');
+
 
 
 const app = express();
@@ -54,6 +66,14 @@ app.use('/api/superadmin', superAdminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/chatbot', chatbotRoutes);
+app.use('/api/product-masters', productMasterRoutes);
+app.use('/api/qr-codes', qrCodeRoutes);
+app.use('/api/manufacturing-configs', manufacturingConfigRoutes);
+app.use('/api/raw-materials', rawMaterialRoutes);
+app.use('/api/production-logs', productionLogRoutes);
+app.use('/api/processing-stages', processingStageRoutes);
+app.use('/api', brandModelRoutes);
+app.use('/api/assemblies', assemblyRoutes);
 
 app.get('/', (req, res) => {
   res.send('Welcome to the Inventory and Billing System API - Backend Running Successfully!');
@@ -85,6 +105,13 @@ const startServer = async () => {
       useUnifiedTopology: true,
     });
     console.log('Connected to MongoDB');
+
+    try {
+      await ManufacturingConfig.syncIndexes();
+      console.log('Manufacturing config indexes synced');
+    } catch (indexError) {
+      console.error('Failed to sync manufacturing config indexes:', indexError);
+    }
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

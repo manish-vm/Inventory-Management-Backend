@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "seed": "node seedSuperAdmin.js && node seedPlans.js",
+    "seed:admin": "node seedSuperAdmin.js",
+    "seed:plans": "node seedPlans.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

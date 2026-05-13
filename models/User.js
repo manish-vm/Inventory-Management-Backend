@@ -16,6 +16,12 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Dealer' 
   },
+  manufacturingLevel: { 
+    type: Number, 
+    default: 1,
+    min: 1,
+    max: 10 // Assuming levels 1-10
+  },
   isActive: { type: Boolean, default: true },
   monthlySalesTarget: { type: Number, default: 0 },
   salesCount: { type: Number, default: 0 }
