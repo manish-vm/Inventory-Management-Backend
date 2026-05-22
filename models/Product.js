@@ -2,11 +2,17 @@ const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
   productName: { type: String, required: true },
+  partNo: { type: String, unique: true, sparse: true, trim: true },
+  description: { type: String },
   productCode: { type: String, unique: true }, // Used for Barcode - auto-generated if not provided
 
   // Only the fields required by your product concept
   brandName: { type: String },
   model: { type: String },
+  type: { type: String },
+  subType: { type: String },
+  unitWeight: { type: Number },
+  unit: { type: String },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
   subcategory: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcategory' },
 

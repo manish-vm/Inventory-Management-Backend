@@ -25,6 +25,9 @@ const processingStageRoutes = require('./routes/processingStage');
 const assemblyRoutes = require('./routes/assembly');
 const brandModelRoutes = require('./routes/brandModel');
 const ManufacturingConfig = require('./models/ManufacturingConfig');
+const stageReviewConfigRoutes = require("./routes/stageReviewConfigRoutes");
+const inspectionRoutes = require('./routes/inspection');
+const formRoutes = require('./routes/forms');
 
 
 
@@ -74,6 +77,9 @@ app.use('/api/production-logs', productionLogRoutes);
 app.use('/api/processing-stages', processingStageRoutes);
 app.use('/api', brandModelRoutes);
 app.use('/api/assemblies', assemblyRoutes);
+app.use("/api/stage-review-config", stageReviewConfigRoutes);
+app.use('/api/inspection', inspectionRoutes);
+app.use('/api/forms', formRoutes);
 
 app.get('/', (req, res) => {
   res.send('Welcome to the Inventory and Billing System API - Backend Running Successfully!');

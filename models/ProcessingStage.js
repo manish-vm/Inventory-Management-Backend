@@ -43,6 +43,33 @@ const processingStageSchema = new mongoose.Schema({
   validationRemarks: { 
     type: String
   },
+
+  // Stage review management (Admin)
+  reviewStatus: {
+    type: String,
+    enum: ['accepted', 'rejected', 'pending', 'rework'],
+    default: 'pending'
+  },
+
+  // Legacy field (still used for rejected)
+  rejectionReason: {
+    type: String,
+    default: ''
+  },
+
+  // New: dynamic answers captured from the admin review form
+  reviewAnswers: {
+    // key-value object keyed by question ids
+    type: Object,
+    default: {}
+  },
+
+  // New: reference to the form definition version stored in ManufacturingConfig
+  reviewFormVersion: {
+    type: String,
+    default: ''
+  },
+
   status: { 
     type: String, 
     enum: ['pending', 'in_progress', 'completed', 'validated', 'skipped'],
@@ -55,6 +82,7 @@ const processingStageSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 processingStageSchema.index({ qrId: 1 });
+processingStageSchema.index({ qrId: 1, stageNumber: 1 });
 processingStageSchema.index({ partNo: 1, stageNumber: 1 });
 
 module.exports = mongoose.model('ProcessingStage', processingStageSchema);

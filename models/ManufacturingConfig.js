@@ -21,7 +21,16 @@ const manufacturingConfigSchema = new mongoose.Schema({
     stageName: { type: String, required: true },
     stageType: { type: String, enum: ['manufacturing', 'processing', 'assembly'], required: true },
     description: String,
-    requiresValidation: { type: Boolean, default: false }
+    requiresValidation: { type: Boolean, default: false },
+
+    // Admin: dynamic review form definition (question tree with branching)
+    // Structure is intentionally flexible to support dropdown/checkbox/multiple-choice + sub-branches.
+    reviewForm: {
+      type: Object,
+      default: {
+        outcomes: []
+      }
+    }
   }],
   isActive: { 
     type: Boolean, 

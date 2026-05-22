@@ -1,9 +1,10 @@
 const ProcessingStage = require('../models/ProcessingStage');
 const QRCode = require('../models/QRCode');
+const { getManufacturingStatsByPartNo } = require('../utils/manufacturingStats');
 
 exports.getAllProcessingStages = async (req, res) => {
   try {
-    const { search, partNo, stageNumber, status } = req.query;
+    const { search, partNo, stageNumber, status, qrId } = req.query;
     let query = {};
 
     if (search) {
@@ -13,6 +14,7 @@ exports.getAllProcessingStages = async (req, res) => {
     }
 
     if (partNo) query.partNo = partNo;
+    if (qrId) query.qrId = qrId;
     if (stageNumber) query.stageNumber = parseInt(stageNumber);
     if (status) query.status = status;
 
@@ -141,6 +143,99 @@ exports.validateProcessingStage = async (req, res) => {
 
     await stage.save();
     res.json(stage);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Admin: stage-level review statistics
+exports.getStageReviewStats = async (req, res) => {
+  try {
+    const stageNumber = parseInt(req.params.stageNumber);
+    const { partNo } = req.query;
+
+    if (partNo) {
+      const stats = await getManufacturingStatsByPartNo({ partNo, stageNumber });
+      return res.json(stats);
+    }
+
+    const agg = await ProcessingStage.aggregate([
+      {
+        $match: { stageNumber }
+      },
+      {
+        $group: {
+          _id: null,
+          acceptedCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'accepted'] }, 1, 0] } },
+          rejectedCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'rejected'] }, 1, 0] } },
+          reworkCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'rework'] }, 1, 0] } },
+          pendingCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'pending'] }, 1, 0] } },
+          total: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json(agg[0] || { acceptedCount: 0, rejectedCount: 0, reworkCount: 0, pendingCount: 0, total: 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Admin: list all product rows for a stage (used in the stage details table)
+exports.getStageReviewItems = async (req, res) => {
+  try {
+    const stageNumber = parseInt(req.params.stageNumber);
+
+    const items = await ProcessingStage.find({ stageNumber })
+      .populate('qrId', 'qrId partNo')
+      .sort({ updatedAt: -1 });
+
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Admin: update a single product row review status
+exports.updateStageReview = async (req, res) => {
+  try {
+    const stage = await ProcessingStage.findById(req.params.id);
+    if (!stage) {
+      return res.status(404).json({ message: 'Processing stage not found' });
+    }
+
+    const { reviewStatus, rejectionReason, operator, reviewAnswers, reviewFormVersion } = req.body;
+
+
+    if (!['accepted', 'rejected', 'pending', 'rework'].includes(reviewStatus)) {
+      return res.status(400).json({ message: 'Invalid reviewStatus' });
+    }
+
+
+    if (reviewStatus === 'rejected') {
+      if (!rejectionReason || String(rejectionReason).trim().length === 0) {
+        return res.status(400).json({ message: 'rejectionReason is required when reviewStatus is rejected' });
+      }
+      stage.rejectionReason = String(rejectionReason).trim();
+    } else {
+      // accepted / pending / rework
+      stage.rejectionReason = '';
+    }
+
+    stage.reviewStatus = reviewStatus;
+    if (operator !== undefined) stage.validatedBy = operator;
+
+    if (reviewAnswers !== undefined) stage.reviewAnswers = reviewAnswers;
+    if (reviewFormVersion !== undefined) stage.reviewFormVersion = reviewFormVersion;
+
+    // If switching away from rejected, clear legacy rejectionReason
+    if (stage.reviewStatus !== 'rejected') {
+      stage.rejectionReason = '';
+    }
+
+    await stage.save();
+    res.json(stage);
+
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

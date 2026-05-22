@@ -64,11 +64,13 @@ exports.createQRCode = async (req, res) => {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
 
-    // QRCode schema stores this value in `partNo` field; we repurpose it to store barcode (productCode)
+    const resolvedPartNo = product.partNo || product.productCode || barcodeNo || productName;
+
     const qrCode = new QRCode({
-      partNo: product.productCode || barcodeNo || productName,
-      batchNo: barcodeNo, // keep batchNo field as the barcode value
-      quantity: quantity || 0
+      partNo: resolvedPartNo,
+      batchNo: barcodeNo || resolvedPartNo,
+      quantity: quantity || 0,
+      currentStage: 1
     });
 
     await qrCode.save();
@@ -93,14 +95,15 @@ exports.bulkCreateQRCodes = async (req, res) => {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
 
-    const resolvedBarcode = product.productCode || barcodeNo;
+    const resolvedPartNo = product.partNo || product.productCode || barcodeNo || productName;
 
     const qrCodes = [];
     for (let i = 0; i < count; i++) {
       const qrCode = new QRCode({
-        partNo: resolvedBarcode || productName,
-        batchNo: resolvedBarcode ? `${resolvedBarcode}-${i + 1}` : `${barcodeNo}-${i + 1}`,
-        quantity: quantity || 0
+        partNo: resolvedPartNo,
+        batchNo: `${resolvedPartNo}-${i + 1}`,
+        quantity: quantity || 0,
+        currentStage: 1
       });
       qrCodes.push(qrCode);
     }
@@ -213,7 +216,10 @@ exports.getQRCodeStats = async (req, res) => {
       processing: 0,
       completed: 0,
       used_in_assembly: 0,
-      void: 0
+      void: 0,
+      accepted: 0,
+      rejected: 0,
+      rework: 0
     };
 
     stats.forEach(stat => {

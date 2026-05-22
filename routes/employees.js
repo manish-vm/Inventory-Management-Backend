@@ -15,6 +15,7 @@ const {
 
 const { auth } = require('../middleware/authMiddleware');
 const { adminOnly, authAndEmployee } = require('../middleware/roleMiddleware');
+const inspectionController = require('../controllers/inspectionController');
 
 
 router.post("/", auth, adminOnly, createEmployee);
@@ -26,6 +27,10 @@ router.patch("/status/:id", auth, adminOnly, toggleEmployeeStatus);
 router.get("/active", auth, getActiveEmployees);
 router.put("/target/:id", auth, adminOnly, updateSalesTarget);
 router.post("/reset-count/:id", auth, adminOnly, resetSalesCount);
+
+router.get('/product/:partNo', auth, authAndEmployee, inspectionController.getProductForEmployee);
+router.post('/inspection-response', auth, authAndEmployee, inspectionController.submitEmployeeInspectionResponse);
+router.get('/product-history/:itemId', auth, authAndEmployee, inspectionController.getProductHistoryByItem);
 
 module.exports = router;
 

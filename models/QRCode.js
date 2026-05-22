@@ -22,7 +22,7 @@ const qrCodeSchema = new mongoose.Schema({
   },
   status: { 
     type: String, 
-    enum: ['generated', 'in_production', 'processing', 'completed', 'used_in_assembly', 'void'],
+    enum: ['generated', 'in_production', 'processing', 'completed', 'used_in_assembly', 'void', 'accepted', 'rejected', 'rework'],
     default: 'generated'
   },
   currentStage: { 

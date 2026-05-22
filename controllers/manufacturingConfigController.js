@@ -19,7 +19,8 @@ const normalizeStages = (stages) => {
     stageName: String(stage.stageName || `Stage ${index + 1}`).trim(),
     stageType: index === 0 ? 'manufacturing' : (stage.stageType || 'processing'),
     description: stage.description,
-    requiresValidation: Boolean(stage.requiresValidation)
+    requiresValidation: Boolean(stage.requiresValidation),
+    reviewForm: stage.reviewForm || { outcomes: [] }
   }));
 };
 
@@ -78,9 +79,12 @@ exports.getManufacturingConfigById = async (req, res) => {
 
 exports.getManufacturingConfigByPartNo = async (req, res) => {
   try {
-    // Backwards compatibility: if older clients still call by partNo,
-    // resolve partNo -> product -> productName -> manufacturing config.
-    const product = await Product.findOne({ partNo: req.params.partNo });
+    const product = await Product.findOne({
+      $or: [
+        { partNo: req.params.partNo },
+        { productCode: req.params.partNo }
+      ]
+    });
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -181,6 +185,65 @@ exports.deleteManufacturingConfig = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// Admin: get review form definitions (per workflow stage)
+// Payload shape is flexible because the UI can evolve.
+exports.getReviewForms = async (req, res) => {
+  try {
+    const config = await ManufacturingConfig.findById(req.params.id);
+    if (!config) {
+      return res.status(404).json({ message: 'Configuration not found' });
+    }
+
+    res.json({
+      productName: config.productName,
+      workflowType: config.workflowType,
+      stages: config.stages.map((s) => ({
+        stageNumber: s.stageNumber,
+        stageName: s.stageName,
+        stageType: s.stageType,
+        reviewForm: s.reviewForm || { outcomes: [] }
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Admin: save review form definitions (per workflow stage)
+// Expected body: { stages: [{ stageNumber, reviewForm }] }
+exports.saveReviewForms = async (req, res) => {
+  try {
+    const config = await ManufacturingConfig.findById(req.params.id);
+    if (!config) {
+      return res.status(404).json({ message: 'Configuration not found' });
+    }
+
+    const { stages } = req.body;
+    if (!Array.isArray(stages)) {
+      return res.status(400).json({ message: '`stages` array is required' });
+    }
+
+    const stageByNumber = new Map(stages.map((s) => [Number(s.stageNumber), s]));
+
+    config.stages = config.stages.map((existingStage) => {
+      const incoming = stageByNumber.get(Number(existingStage.stageNumber));
+      if (!incoming) return existingStage;
+
+      return {
+        ...existingStage.toObject(),
+        reviewForm: incoming.reviewForm || { outcomes: [] }
+      };
+    });
+
+    await config.save();
+
+    res.json({ message: 'Review forms saved', config });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 
 exports.validateStageSequence = async (req, res) => {
   try {
