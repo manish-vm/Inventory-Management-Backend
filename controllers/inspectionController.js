@@ -234,13 +234,14 @@ exports.searchProductsForEmployee = async (req, res) => {
       .limit(50)
       .lean();
 
-    // If it matches by productName, collapse results to a single row per productName.
-    // (Task requirement: do not treat partNo/batch as the search unit on employee portal.)
+    // Requirement: employee portal dropdown/list should show each product ONCE (union by productName),
+    // even if multiple QR codes exist for the same partNo/productName.
+    // We therefore always collapse to a single row per productName when term matches productName.
     const matchedByProductName = term
       ? productRows.filter((p) => String(p.productName || '').toLowerCase().includes(term.toLowerCase()))
-      : [];
+      : productRows;
 
-    if (term && matchedByProductName.length) {
+    if (matchedByProductName.length) {
       const uniqueProductNames = Array.from(new Set(matchedByProductName.map((p) => p.productName).filter(Boolean)));
 
       const rows = [];
@@ -250,17 +251,15 @@ exports.searchProductsForEmployee = async (req, res) => {
           .map((p) => p.partNo)
           .filter(Boolean);
 
-        // Total QR codes generated under this product (across all partNos).
         const availableCount = productPartNos.length
           ? await QRCode.countDocuments({ partNo: { $in: productPartNos }, ...stageMatch })
           : 0;
 
-        // Representative QRCode: latest QRCode among the same partNos
         const latestQrRows = productPartNos.length
           ? await QRCode.find({ partNo: { $in: productPartNos }, ...stageMatch }).sort({ updatedAt: -1 }).limit(1).lean()
           : null;
-        const latestQr = latestQrRows?.[0];
 
+        const latestQr = latestQrRows?.[0];
         if (!latestQr) continue;
 
         rows.push({
@@ -276,44 +275,8 @@ exports.searchProductsForEmployee = async (req, res) => {
       return res.json(rows.slice(0, 20));
     }
 
-    // Fallback (when search matches partNo/productCode but not productName): keep existing behavior.
-    const productPartNumbers = productRows.map((product) => product.partNo || product.productCode).filter(Boolean);
-    const qrQuery = term
-      ? {
-          $or: [
-            { partNo: { $regex: term, $options: 'i' } },
-            { batchNo: { $regex: term, $options: 'i' } },
-            ...(productPartNumbers.length ? [{ partNo: { $in: productPartNumbers } }] : [])
-          ]
-        }
-      : {};
-
-    const qrRows = await QRCode.find({ ...qrQuery, ...stageMatch }).sort({ updatedAt: -1 }).limit(50).lean();
-    const productByPart = new Map(productRows.map((product) => [product.partNo || product.productCode, product]));
-
-    const rows = [];
-    for (const qrCode of qrRows) {
-      const product =
-        productByPart.get(qrCode.partNo) ||
-        (await Product.findOne({ $or: [{ partNo: qrCode.partNo }, { productCode: qrCode.partNo }] }).lean());
-
-      rows.push({
-        productId: product?._id || qrCode._id,
-        productName: product?.productName || qrCode.partNo,
-        partNo: qrCode.partNo,
-        batchNo: qrCode.batchNo || '',
-        availableCount: qrCode.quantity || await QRCode.countDocuments({ partNo: qrCode.partNo, batchNo: qrCode.batchNo }),
-        currentStage: qrCode.currentStage || 1
-      });
-    }
-
-const deduped = Array.from(
-      new Map(
-        rows.map((row) => [`${row.productName}|${row.partNo}|${row.batchNo}`, row])
-      ).values()
-    );
-
-    return res.json(deduped.slice(0, 20));
+    // No productName matches: fall back to empty result.
+    return res.json([]);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -772,12 +735,72 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     // Move accepted to next stage (if exists), else mark as accepted at current stage (final stage)
     if (acceptedQrs.length && nextStage) {
+      // 1) Update QR codes to be processed at the next stage
       await QRCode.updateMany(
         { _id: { $in: acceptedQrs.map((q) => q._id) } },
         { $set: { currentStage: nextStage.stageNumber, status: 'processing' } }
       );
 
+      // 2) Queue counters: accepted items are now *arrived for processing* in next stage,
+      // but they should not be counted as 'accepted' at the next stage yet.
+      await ProductStage.findOneAndUpdate(
+        {
+          productId: resolvedProductId,
+          partNo,
+          stageNumber: nextStage.stageNumber
+        },
+        {
+          $setOnInsert: {
+            productId: resolvedProductId,
+            partNo,
+            stageNumber: nextStage.stageNumber,
+            stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
+            availableQuantity: 0,
+            acceptedCount: 0,
+            rejectedCount: 0,
+            reworkCount: 0,
+            pendingCount: 0
+          },
+          $inc: {
+            availableQuantity: counts.accepted,
+            pendingCount: counts.accepted
+          }
+        },
+        { new: true, upsert: true }
+      );
+
+      // 3) Ensure ProcessingStage row exists for the next stage and increment input quantity.
+      await ProcessingStage.findOneAndUpdate(
+        {
+          partNo,
+          stageNumber: nextStage.stageNumber,
+          $or: [{ qrId: { $exists: false } }, { qrId: null }]
+        },
+        {
+          $setOnInsert: {
+            partNo,
+            stageNumber: nextStage.stageNumber,
+            stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
+            inputQuantity: 0,
+            outputQuantity: 0,
+            acceptedQuantity: 0,
+            rejectedQuantity: 0,
+            reworkQuantity: 0,
+            status: 'pending'
+          },
+          $inc: {
+            inputQuantity: counts.accepted,
+            // accepted/rejected/rework remain unchanged at this moment
+          },
+          $set: {
+            operator: operatorName
+          }
+        },
+        { new: true, upsert: true }
+      );
+
       for (const qrCodeItem of acceptedQrs) {
+        // Mark processed/validated at the current stage
         const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
         processingStage.reviewStatus = 'accepted';
         processingStage.status = 'completed';
@@ -804,6 +827,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           remarks: String(remarks || '')
         });
 
+        // Ensure stage row exists for the QR at the next stage (will be reviewed later)
         await ensureProcessingStage({ qrCode: qrCodeItem, stage: nextStage, operatorName });
       }
     } else if (acceptedQrs.length) {
