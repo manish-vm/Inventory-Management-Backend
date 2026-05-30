@@ -3,12 +3,36 @@ const StageReviewSubmission = require("../models/StageReviewSubmission");
 const { getManufacturingStatsByPartNo } = require("../utils/manufacturingStats");
 
 const parseStageNumber = (stageId) => {
-  const exact = Number(stageId);
+  // Accept stageId shapes like:
+  //  - "1" / 1
+  //  - "stage-1" / "Stage-1" / "S1" / "S-1"
+  //  - "something-2" (suffix digits)
+  //  - "1-stage" (prefix digits)
+  // Return null if stage number cannot be inferred.
+  const raw = stageId === undefined || stageId === null ? '' : String(stageId).trim();
+  if (!raw) return null;
+
+  const exact = Number(raw);
   if (Number.isFinite(exact) && exact > 0) return exact;
 
-  const suffixMatch = String(stageId || "").match(/-(\d+)$/);
+  // suffix digits: "something-2" or "stage-2"
+  const suffixMatch = raw.match(/-(\d+)$/);
   const suffix = suffixMatch ? Number(suffixMatch[1]) : NaN;
-  return Number.isFinite(suffix) && suffix > 0 ? suffix : null;
+  if (Number.isFinite(suffix) && suffix > 0) return suffix;
+
+  // prefix digits: "2-stage" (rare but handle)
+  const prefixMatch = raw.match(/^(\d+)[^\d]*$/) || raw.match(/^(\d+)(?=[^\d]*$)/);
+  if (prefixMatch) {
+    const prefix = Number(prefixMatch[1]);
+    if (Number.isFinite(prefix) && prefix > 0) return prefix;
+  }
+
+  // handle "S1" / "S-1" / "STAGE1"
+  const sMatch = raw.match(/\bS\s*[-]?(\d+)\b/i) || raw.match(/\bSTAGE\s*[-]?(\d+)\b/i);
+  const sNum = sMatch ? Number(sMatch[1]) : NaN;
+  if (Number.isFinite(sNum) && sNum > 0) return sNum;
+
+  return null;
 };
 
 exports.createOrUpdateConfig = async (req, res) => {
@@ -19,7 +43,9 @@ exports.createOrUpdateConfig = async (req, res) => {
       acceptedRouteStage,
       reworkRouteStage,
       rejectionQuestionnaireEnabled,
-      rejectionQuestions
+      rejectionQuestions,
+      reworkQuestionnaireEnabled,
+      reworkQuestions
     } = req.body;
 
     const config = await StageReviewConfig.findOneAndUpdate(
@@ -29,7 +55,9 @@ exports.createOrUpdateConfig = async (req, res) => {
         acceptedRouteStage: acceptedRouteStage || "",
         reworkRouteStage: reworkRouteStage || "",
         rejectionQuestionnaireEnabled: Boolean(rejectionQuestionnaireEnabled),
-        rejectionQuestions: Array.isArray(rejectionQuestions) ? rejectionQuestions : []
+        rejectionQuestions: Array.isArray(rejectionQuestions) ? rejectionQuestions : [],
+        reworkQuestionnaireEnabled: Boolean(reworkQuestionnaireEnabled),
+        reworkQuestions: Array.isArray(reworkQuestions) ? reworkQuestions : []
       },
       {
         new: true,
@@ -94,9 +122,17 @@ exports.getAnalytics = async (req, res) => {
     const { partNo } = req.query;
 
     if (partNo) {
+      const parsedStageNumber = parseStageNumber(stageId);
+      if (!parsedStageNumber) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid stageId. Could not parse stage number from: ${stageId}`
+        });
+      }
+
       const stats = await getManufacturingStatsByPartNo({
         partNo,
-        stageNumber: parseStageNumber(stageId)
+        stageNumber: parsedStageNumber
       });
 
       return res.status(200).json({

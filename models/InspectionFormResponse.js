@@ -8,8 +8,9 @@ const inspectionAnswerSchema = new mongoose.Schema({
 }, { _id: false });
 
 const inspectionFormResponseSchema = new mongoose.Schema({
-  qrCode: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode', required: true },
-  qrId: { type: String, required: true },
+  qrCode: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode' },
+  productId: { type: String, default: '' },
+  qrId: { type: String, default: '' },
   itemId: { type: String, default: '' },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   employeeName: { type: String, default: '' },
@@ -24,9 +25,14 @@ const inspectionFormResponseSchema = new mongoose.Schema({
   inspectionResult: {
     type: String,
     enum: ['ACCEPTED', 'REJECTED', 'REWORK'],
-    required: true
+    default: 'ACCEPTED'
   },
+  acceptedCount: { type: Number, default: 0 },
+  rejectedCount: { type: Number, default: 0 },
+  reworkCount: { type: Number, default: 0 },
   responses: [inspectionAnswerSchema],
+  rejectionFormResponses: [inspectionAnswerSchema],
+  reworkFormResponses: [inspectionAnswerSchema],
   remarks: { type: String, default: '' },
   movement: {
     type: {

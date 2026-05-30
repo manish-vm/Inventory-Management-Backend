@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const inspectionScanLogSchema = new mongoose.Schema({
-  qrCode: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode', required: true },
+  qrCode: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode', required: false },
   qrId: { type: String, required: true },
   itemId: { type: String, default: '' },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

@@ -14,7 +14,7 @@ const rateLimit = new Map();
 const SYSTEM_PROMPT = `You are an AI assistant for Inventory PRO inventory management system. Help with:
  - Product/inventory management
  - Billing & invoices  
- - Customers & employees
+ - Employees
  - Refunds & reports
  - System usage
 
@@ -148,11 +148,6 @@ function getFallbackResponse(query) {
     return "For billing and invoices, you can access the Billing section to create new invoices, view payment history, and manage transactions. The system tracks all your billing activities.";
   }
   
-  // Customer queries
-  if (lowerQuery.includes('customer') || lowerQuery.includes('client')) {
-    return "Customer management is available in the Customers section. You can add, edit, and manage customer information, view their purchase history, and track their activities.";
-  }
-  
   // Employee queries
   if (lowerQuery.includes('employee') || lowerQuery.includes('staff')) {
     return "Employee management allows you to add team members, assign roles, and manage their permissions. Contact your administrator for access to employee management features.";
@@ -170,7 +165,7 @@ function getFallbackResponse(query) {
   
   // How to use / Help
   if (lowerQuery.includes('how') || lowerQuery.includes('help') || lowerQuery.includes('guide')) {
-    return "This inventory management system helps you track products, manage customers, handle billing, and more. Use the sidebar to navigate between different sections. Need help with a specific feature?";
+    return "This inventory management system helps you track products, manage employees, handle billing, and view reports. Use the sidebar to navigate between different sections. Need help with a specific feature?";
   }
   
   // Login/Access issues
@@ -185,7 +180,7 @@ function getFallbackResponse(query) {
   
   // Greeting
   if (lowerQuery.includes('hello') || lowerQuery.includes('hi') || lowerQuery.includes('hey')) {
-    return "Hello! How can I assist you today? I can help with products, billing, customers, reports, and more.";
+    return "Hello! How can I assist you today? I can help with products, billing, employees, reports, and more.";
   }
   
   // Thank you
@@ -194,7 +189,7 @@ function getFallbackResponse(query) {
   }
   
   // Default response
-  return "Thank you for your question! I'm here to help with this inventory management system. I can assist with products, billing, customers, reports, refunds, and general usage. What would you like to know more about?";
+  return "Thank you for your question! I'm here to help with this inventory management system. I can assist with products, billing, employees, reports, refunds, and general usage. What would you like to know more about?";
 }
 
 // Clear conversation history for a user

@@ -46,7 +46,9 @@ exports.createProcessingStage = async (req, res) => {
   try {
     const { qrId, partNo, stageNumber, stageName, inputQuantity, operator } = req.body;
 
-    const existingStage = await ProcessingStage.findOne({ qrId, stageNumber });
+    const existingStage = qrId
+      ? await ProcessingStage.findOne({ qrId, stageNumber })
+      : await ProcessingStage.findOne({ partNo, stageNumber, qrId: { $exists: false } });
     if (existingStage) {
       return res.status(400).json({ message: 'Processing stage already exists for this QR code' });
     }
@@ -63,9 +65,11 @@ exports.createProcessingStage = async (req, res) => {
 
     await stage.save();
 
-    await QRCode.findByIdAndUpdate(qrId, {
-      status: 'processing'
-    });
+    if (qrId) {
+      await QRCode.findByIdAndUpdate(qrId, {
+        status: 'processing'
+      });
+    }
 
     const populated = await ProcessingStage.findById(stage._id).populate('qrId', 'qrId');
     res.status(201).json(populated);
@@ -113,10 +117,12 @@ exports.completeProcessingStage = async (req, res) => {
 
     await stage.save();
 
-    await QRCode.findByIdAndUpdate(stage.qrId, {
-      status: 'completed',
-      currentStage: stage.stageNumber
-    });
+    if (stage.qrId) {
+      await QRCode.findByIdAndUpdate(stage.qrId, {
+        status: 'completed',
+        currentStage: stage.stageNumber
+      });
+    }
 
     res.json(stage);
   } catch (error) {
@@ -156,7 +162,16 @@ exports.getStageReviewStats = async (req, res) => {
 
     if (partNo) {
       const stats = await getManufacturingStatsByPartNo({ partNo, stageNumber });
-      return res.json(stats);
+
+      // Backward compatible field names for existing frontend components
+      return res.json({
+        ...stats,
+        total: stats.totalItems,
+        acceptedCount: stats.accepted,
+        rejectedCount: stats.rejected,
+        reworkCount: stats.rework,
+        pendingCount: stats.pending
+      });
     }
 
     const agg = await ProcessingStage.aggregate([
@@ -166,16 +181,20 @@ exports.getStageReviewStats = async (req, res) => {
       {
         $group: {
           _id: null,
-          acceptedCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'accepted'] }, 1, 0] } },
-          rejectedCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'rejected'] }, 1, 0] } },
-          reworkCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'rework'] }, 1, 0] } },
-          pendingCount: { $sum: { $cond: [{ $eq: ['$reviewStatus', 'pending'] }, 1, 0] } },
-          total: { $sum: 1 }
+          acceptedCount: { $sum: '$acceptedQuantity' },
+          rejectedCount: { $sum: '$rejectedQuantity' },
+          reworkCount: { $sum: '$reworkQuantity' },
+          total: { $sum: '$inputQuantity' }
         }
       }
     ]);
 
-    res.json(agg[0] || { acceptedCount: 0, rejectedCount: 0, reworkCount: 0, pendingCount: 0, total: 0 });
+    const row = agg[0] || { acceptedCount: 0, rejectedCount: 0, reworkCount: 0, total: 0 };
+    row.pendingCount = Math.max(
+      Number(row.total || 0) - (Number(row.acceptedCount || 0) + Number(row.rejectedCount || 0) + Number(row.reworkCount || 0)),
+      0
+    );
+    res.json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -223,6 +242,9 @@ exports.updateStageReview = async (req, res) => {
     }
 
     stage.reviewStatus = reviewStatus;
+    stage.acceptedQuantity = reviewStatus === 'accepted' ? Number(stage.inputQuantity || 0) : 0;
+    stage.rejectedQuantity = reviewStatus === 'rejected' ? Number(stage.inputQuantity || 0) : 0;
+    stage.reworkQuantity = reviewStatus === 'rework' ? Number(stage.inputQuantity || 0) : 0;
     if (operator !== undefined) stage.validatedBy = operator;
 
     if (reviewAnswers !== undefined) stage.reviewAnswers = reviewAnswers;
@@ -248,8 +270,11 @@ exports.getStageStats = async (req, res) => {
         $group: {
           _id: '$stageNumber',
           totalInput: { $sum: '$inputQuantity' },
+          accepted: { $sum: '$acceptedQuantity' },
+          rejected: { $sum: '$rejectedQuantity' },
+          rework: { $sum: '$reworkQuantity' },
           totalOutput: { $sum: '$outputQuantity' },
-          count: { $sum: 1 }
+          count: { $sum: '$inputQuantity' }
         }
       },
       {

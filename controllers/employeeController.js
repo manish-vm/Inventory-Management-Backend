@@ -5,7 +5,7 @@ const Product = require("../models/Product");
 
 exports.createEmployee = async (req, res) => {
   try {
-    const { password, canLogin, manufacturingLevel, ...employeeData } = req.body;
+    const { password, canLogin, manufacturingLevel, assignedStages = [], ...employeeData } = req.body;
     
     // Ensure employee belongs to admin's dealer
     employeeData.dealerId = req.user.dealerId;
@@ -20,6 +20,7 @@ exports.createEmployee = async (req, res) => {
       role: 'employee',
       dealerId: req.user.dealerId,
       manufacturingLevel: manufacturingLevel || 1,
+      assignedStages: Array.isArray(assignedStages) ? assignedStages : [],
       isActive: true
     });
 
@@ -34,7 +35,7 @@ exports.getAdminEmployees = async (req, res) => {
     const employees = await User.find({
       role: 'employee',
       dealerId: req.user.dealerId
-    }).select('name email phone address username isActive manufacturingLevel createdAt').sort({ createdAt: -1 });
+    }).select('name email phone address username isActive manufacturingLevel assignedStages createdAt').sort({ createdAt: -1 });
     res.json(employees);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -52,7 +53,7 @@ exports.updateEmployee = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const { password, name, email, phone, address, isActive, manufacturingLevel } = req.body;
+    const { password, name, email, phone, address, isActive, manufacturingLevel, assignedStages } = req.body;
     
     if (name) employee.name = name;
     if (email) employee.email = email;
@@ -60,6 +61,7 @@ exports.updateEmployee = async (req, res) => {
     if (address) employee.address = address;
     if (isActive !== undefined) employee.isActive = isActive;
     if (manufacturingLevel !== undefined) employee.manufacturingLevel = manufacturingLevel;
+    if (Array.isArray(assignedStages)) employee.assignedStages = assignedStages;
     if (password) employee.password = password;
 
     await employee.save();

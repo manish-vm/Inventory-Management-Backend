@@ -25,7 +25,14 @@ router.get('/stage/:stageId', auth, async (req, res) => {
 
     const config = await ManufacturingConfig.findOne(query);
     const stage = config?.stages?.find((item) => Number(item.stageNumber) === stageId);
-    const questions = stage?.reviewForm?.questions || stage?.reviewForm?.outcomes || [];
+    const formType = String(req.query.formType || 'inspection').toLowerCase();
+    const formDefinition =
+      formType === 'rejection'
+        ? stage?.reviewForm?.rejectionForm
+        : formType === 'rework'
+          ? stage?.reviewForm?.reworkForm
+          : stage?.reviewForm;
+    const questions = formDefinition?.questions || formDefinition?.outcomes || [];
 
     if (!config || !stage || questions.length === 0) {
       return res.json([]);
@@ -33,8 +40,8 @@ router.get('/stage/:stageId', auth, async (req, res) => {
 
     res.json([
       {
-        formId: stage?.reviewForm?.formId || `stage-${stageId}-admin`,
-        formName: stage?.reviewForm?.formName || `${stage.stageName} Inspection Form`,
+        formId: formDefinition?.formId || `stage-${stageId}-${formType}`,
+        formName: formDefinition?.formName || `${stage.stageName} ${formType === 'inspection' ? 'Inspection' : formType.charAt(0).toUpperCase() + formType.slice(1) + ' Analysis'} Form`,
         stageId,
         productName: config.productName,
         questions

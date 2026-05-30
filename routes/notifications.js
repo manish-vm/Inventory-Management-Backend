@@ -25,7 +25,7 @@ router.delete('/:id', notificationController.deleteNotification);
 // Get all admins (for superadmin)
 router.get('/admins', authorize('superadmin'), notificationController.getAllAdmins);
 
-// Get employees/customers under admin
+// Get employees under admin
 router.get('/users', authorize('admin', 'superadmin'), notificationController.getAdminUsers);
 
 // Send message from SuperAdmin to Admin
@@ -33,9 +33,6 @@ router.post('/to-admin', authorize('superadmin'), notificationController.sendMes
 
 // Broadcast to employees
 router.post('/broadcast-employees', authorize('admin'), notificationController.broadcastToEmployees);
-
-// Broadcast to customers
-router.post('/broadcast-customers', authorize('admin'), notificationController.broadcastToCustomers);
 
 module.exports = router;
 

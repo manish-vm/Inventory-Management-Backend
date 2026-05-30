@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const { syncStageOneInputQuantity } = require('../utils/processingStageInventory');
 
 exports.getAllProductMasters = async (req, res) => {
   try {
@@ -49,7 +50,7 @@ exports.getProductMasterByPartNo = async (req, res) => {
 
 exports.createProductMaster = async (req, res) => {
   try {
-    const { partNo, description, productName, type, subType, unitWeight, unit } = req.body;
+    const { partNo, description, productName, type, subType, unitWeight, unit, numberOfItems } = req.body;
 
     const existingProduct = await Product.findOne({ partNo: partNo?.toUpperCase() });
     if (existingProduct) {
@@ -63,10 +64,13 @@ exports.createProductMaster = async (req, res) => {
       type,
       subType,
       unitWeight,
-      unit
+      unit,
+      numberOfItems: Number(numberOfItems || 0),
+      stockQuantity: Number(numberOfItems || 0)
     });
 
     await product.save();
+    await syncStageOneInputQuantity(product);
     res.status(201).json(product);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -80,7 +84,7 @@ exports.updateProductMaster = async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    const { partNo, description, productName, type, subType, unitWeight, unit, isActive } = req.body;
+    const { partNo, description, productName, type, subType, unitWeight, unit, numberOfItems, isActive } = req.body;
 
     if (partNo && partNo !== product.partNo) {
       const existing = await Product.findOne({ partNo: partNo?.toUpperCase() });
@@ -96,9 +100,14 @@ exports.updateProductMaster = async (req, res) => {
     if (subType !== undefined) product.subType = subType;
     if (unitWeight !== undefined) product.unitWeight = unitWeight;
     if (unit !== undefined) product.unit = unit;
+    if (numberOfItems !== undefined) {
+      product.numberOfItems = Number(numberOfItems || 0);
+      product.stockQuantity = Number(numberOfItems || 0);
+    }
     if (isActive !== undefined) product.isActive = isActive;
 
     await product.save();
+    await syncStageOneInputQuantity(product);
     res.json(product);
   } catch (error) {
     res.status(500).json({ error: error.message });

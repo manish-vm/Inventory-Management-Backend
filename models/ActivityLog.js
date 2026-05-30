@@ -8,7 +8,7 @@ const activityLogSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['superadmin', 'admin', 'employee', 'customer'],
+    enum: ['superadmin', 'admin', 'employee'],
     required: true
   },
   action: {

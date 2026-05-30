@@ -13,6 +13,8 @@ const productSchema = new mongoose.Schema({
   subType: { type: String },
   unitWeight: { type: Number },
   unit: { type: String },
+  numberOfItems: { type: Number, default: 0 },
+  withQRCode: { type: Boolean, default: false },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },
   subcategory: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcategory' },
 

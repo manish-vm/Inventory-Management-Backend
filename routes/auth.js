@@ -9,12 +9,8 @@ const authController = require('../controllers/authController');
 router.post('/register', auth, adminOnly, authController.register);
 
 // @route   POST /api/auth/login
-// @desc    Login user (admin, employee, or customer)
+// @desc    Login user (admin or employee)
 router.post('/login', authController.login);
-
-// @route   POST /api/auth/signup
-// @desc    Customer self-signup
-router.post('/signup', authController.signup);
 
 // @route   GET /api/auth/me
 // @desc    Get current user

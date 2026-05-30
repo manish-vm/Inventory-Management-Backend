@@ -4,7 +4,7 @@ const processingStageSchema = new mongoose.Schema({
   qrId: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'QRCode',
-    required: true
+    required: false
   },
   partNo: { 
     type: String, 
@@ -24,6 +24,18 @@ const processingStageSchema = new mongoose.Schema({
   },
   outputQuantity: { 
     type: Number, 
+    default: 0
+  },
+  acceptedQuantity: {
+    type: Number,
+    default: 0
+  },
+  rejectedQuantity: {
+    type: Number,
+    default: 0
+  },
+  reworkQuantity: {
+    type: Number,
     default: 0
   },
   operator: { 

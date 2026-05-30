@@ -5,6 +5,9 @@ const Invoice = require('../models/Invoice');
 const mongoose = require('mongoose');
 const Brand = require('../models/Brand');
 const BrandModel = require('../models/BrandModel');
+const { syncStageOneInputQuantity } = require('../utils/processingStageInventory');
+const QRCode = require('../models/QRCode');
+const DefectDetail = require('../models/DefectDetail');
 
 // @desc    Get all products (with optional search/filter)
 // @route   GET /api/products
@@ -105,6 +108,79 @@ const resolveBrandModelStrings = async ({ brandId, modelId, brandName, model }) 
   };
 };
 
+const splitList = (value) =>
+  String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const generatePartNo = async () => {
+  let partNo = '';
+  let exists = true;
+  while (exists) {
+    partNo = `PRT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    exists = await Product.exists({ partNo });
+  }
+  return partNo;
+};
+
+const ensureBrandAndModel = async ({ brandName, model }) => {
+  const brandNames = splitList(brandName);
+  const modelNames = splitList(model);
+  const cleanBrand = brandNames[0];
+  const cleanModel = modelNames[0];
+
+  if (!cleanBrand) return { brandName: brandName || null, model: model || null };
+
+  const brands = [];
+  for (const name of brandNames) {
+    const brand = await Brand.findOneAndUpdate(
+      { name },
+      { $setOnInsert: { name, isActive: true } },
+      { new: true, upsert: true }
+    );
+    brands.push(brand);
+  }
+
+  if (modelNames.length) {
+    for (const [index, modelName] of modelNames.entries()) {
+      const brand = brands[index] || brands[0];
+      await BrandModel.findOneAndUpdate(
+        { brandId: brand._id, name: modelName },
+        { $setOnInsert: { brandId: brand._id, name: modelName, isActive: true } },
+        { new: true, upsert: true }
+      );
+    }
+  }
+
+  return {
+    brandName: brandNames.join(', '),
+    model: modelNames.join(', ') || null
+  };
+};
+
+const ensureDefects = async (type, names) => {
+  for (const name of splitList(names)) {
+    await DefectDetail.findOneAndUpdate(
+      { type, name },
+      { $setOnInsert: { type, name, isActive: true } },
+      { new: true, upsert: true }
+    );
+  }
+};
+
+const createProductQRCode = async (product) => {
+  if (!product?.withQRCode) return null;
+  const partNo = product.partNo || product.productCode || product.productName;
+  return QRCode.create({
+    partNo,
+    batchNo: partNo,
+    quantity: Number(product.numberOfItems || 0),
+    currentStage: 1,
+    status: 'generated'
+  });
+};
+
 // @desc    Create new product (Admin only)
 // @route   POST /api/products
 exports.createProduct = async (req, res) => {
@@ -112,6 +188,10 @@ exports.createProduct = async (req, res) => {
     const {
       productName,
       productCode,
+      partNo,
+      rootPartNo,
+      withQRCode,
+      createQRCode,
       brandId,
       modelId,
       brandName,
@@ -119,6 +199,7 @@ exports.createProduct = async (req, res) => {
       category,
       subcategory,
       stockQuantity,
+      numberOfItems,
       minStockLevel,
       basePrice,
       sellingPrice
@@ -136,22 +217,30 @@ exports.createProduct = async (req, res) => {
       }
     }
 
-    const resolved = await resolveBrandModelStrings({ brandId, modelId, brandName, model });
+    const resolved = brandId && modelId
+      ? await resolveBrandModelStrings({ brandId, modelId, brandName, model })
+      : await ensureBrandAndModel({ brandName, model });
+    const resolvedPartNo = (partNo || rootPartNo || '').trim().toUpperCase() || await generatePartNo();
 
     const product = new Product({
       productName,
       productCode, // Will be auto-generated if not provided
+      partNo: resolvedPartNo,
       category,
       subcategory,
-      stockQuantity: stockQuantity || 0,
+      numberOfItems: Number(numberOfItems || stockQuantity || 0),
+      stockQuantity: stockQuantity || numberOfItems || 0,
       minStockLevel: minStockLevel || 5,
       basePrice,
       sellingPrice,
       brandName: resolved.brandName,
-      model: resolved.model
+      model: resolved.model,
+      withQRCode: Boolean(withQRCode ?? createQRCode)
     });
 
     await product.save();
+    await syncStageOneInputQuantity(product);
+    await createProductQRCode(product);
     res.status(201).json(product);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -165,11 +254,15 @@ exports.updateProduct = async (req, res) => {
     const {
       productName,
       productCode,
+      partNo,
+      rootPartNo,
+      withQRCode,
       brandId,
       modelId,
       category,
       subcategory,
       stockQuantity,
+      numberOfItems,
       minStockLevel,
       basePrice,
       sellingPrice
@@ -189,9 +282,14 @@ exports.updateProduct = async (req, res) => {
 
     if (productName) product.productName = productName;
     if (productCode) product.productCode = productCode;
+    if (partNo !== undefined || rootPartNo !== undefined) {
+      product.partNo = String(partNo || rootPartNo || '').trim().toUpperCase() || undefined;
+    }
     if (category) product.category = category;
     if (subcategory !== undefined) product.subcategory = subcategory;
+    if (numberOfItems !== undefined) product.numberOfItems = Number(numberOfItems || 0);
     if (stockQuantity !== undefined) product.stockQuantity = stockQuantity;
+    if (withQRCode !== undefined) product.withQRCode = Boolean(withQRCode);
     if (minStockLevel !== undefined) product.minStockLevel = minStockLevel;
     if (basePrice !== undefined) product.basePrice = basePrice;
     if (sellingPrice !== undefined) product.sellingPrice = sellingPrice;
@@ -204,7 +302,68 @@ exports.updateProduct = async (req, res) => {
     }
 
     await product.save();
+    await syncStageOneInputQuantity(product);
     res.json(product);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.bulkUploadProducts = async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.products) ? req.body.products : [];
+    if (!rows.length) return res.status(400).json({ message: 'No products provided' });
+
+    const result = { created: 0, updated: 0, qrCreated: 0, errors: [] };
+
+    for (const [index, row] of rows.entries()) {
+      try {
+        const productName = row.productName || row.name || row.description;
+        if (!productName) throw new Error('productName is required');
+
+        const partNo = String(row.partNo || row.rootPartNo || '').trim().toUpperCase() || await generatePartNo();
+        const numberOfItems = Number(row.numberOfItems || row.items || row.quantity || row.stockQuantity || 0);
+        const withQRCode = ['true', 'yes', '1', 'with qr', 'withqr'].includes(String(row.withQRCode ?? row.withQR ?? '').trim().toLowerCase());
+        const resolved = await ensureBrandAndModel({ brandName: row.brandName || row.brand, model: row.model });
+
+        await ensureDefects('reject', row.rejectDefects || row.rejectionDefects || row.defectRejectDetails);
+        await ensureDefects('rework', row.reworkDefects || row.defectReworkDetails);
+
+        let product = await Product.findOne({ partNo });
+        const payload = {
+          productName,
+          partNo,
+          description: row.description || productName,
+          numberOfItems,
+          stockQuantity: numberOfItems,
+          brandName: resolved.brandName,
+          model: resolved.model,
+          withQRCode
+        };
+
+        if (product) {
+          Object.assign(product, payload);
+          await product.save();
+          result.updated += 1;
+        } else {
+          product = await Product.create(payload);
+          result.created += 1;
+        }
+
+        await syncStageOneInputQuantity(product);
+        if (withQRCode) {
+          const existingQr = await QRCode.findOne({ partNo });
+          if (!existingQr) {
+            await createProductQRCode(product);
+            result.qrCreated += 1;
+          }
+        }
+      } catch (error) {
+        result.errors.push({ row: index + 2, error: error.message });
+      }
+    }
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

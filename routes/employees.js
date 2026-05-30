@@ -28,6 +28,8 @@ router.get("/active", auth, getActiveEmployees);
 router.put("/target/:id", auth, adminOnly, updateSalesTarget);
 router.post("/reset-count/:id", auth, adminOnly, resetSalesCount);
 
+router.get('/products/search', auth, authAndEmployee, inspectionController.searchProductsForEmployee);
+router.get('/batch-product/:key', auth, authAndEmployee, inspectionController.getBatchProductForEmployee);
 router.get('/product/:partNo', auth, authAndEmployee, inspectionController.getProductForEmployee);
 router.post('/inspection-response', auth, authAndEmployee, inspectionController.submitEmployeeInspectionResponse);
 router.get('/product-history/:itemId', auth, authAndEmployee, inspectionController.getProductHistoryByItem);

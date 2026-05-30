@@ -7,17 +7,25 @@ const productsController = require('../controllers/productsController');
 // @desc    Get all products (with optional search/filter)
 router.get('/', auth, authAndEmployee, productsController.getProducts);
 
-// @route   GET /api/products/:id
-// @desc    Get single product by ID
-router.get('/:id', auth, authAndEmployee, productsController.getProductById);
-
 // @route   GET /api/products/code/:code
 // @desc    Get product by barcode/productCode
 router.get('/code/:code', auth, authAndEmployee, productsController.getProductByCode);
 
+// @route   GET /api/products/low-stock/all
+// @desc    Get all low stock products
+router.get('/low-stock/all', auth, authAndEmployee, productsController.getLowStockProducts);
+
+// @route   GET /api/products/:id
+// @desc    Get single product by ID
+router.get('/:id', auth, authAndEmployee, productsController.getProductById);
+
 // @route   POST /api/products
 // @desc    Create new product (Admin only)
 router.post('/', auth, adminOnly, productsController.createProduct);
+
+// @route   POST /api/products/bulk-upload
+// @desc    Bulk upload products from parsed Excel rows (Admin only)
+router.post('/bulk-upload', auth, adminOnly, productsController.bulkUploadProducts);
 
 // @route   PUT /api/products/:id
 // @desc    Update product (Admin only)
@@ -26,10 +34,6 @@ router.put('/:id', auth, adminOnly, productsController.updateProduct);
 // @route   DELETE /api/products/:id
 // @desc    Delete product (Admin only)
 router.delete('/:id', auth, adminOnly, productsController.deleteProduct);
-
-// @route   GET /api/products/low-stock/all
-// @desc    Get all low stock products
-router.get('/low-stock/all', auth, authAndEmployee, productsController.getLowStockProducts);
 
 // Category Routes
 // @route   GET /api/products/categories/all

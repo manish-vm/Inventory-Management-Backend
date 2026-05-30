@@ -147,9 +147,6 @@ exports.getInvoices = async (req, res) => {
     if (req.user.role === 'employee') {
       // Employees see invoices where they are the referred employee
       query.referredEmployee = req.user._id;
-    } else if (req.user.role === 'customer') {
-      // Customers see their own invoices (as cashier since they make purchases)
-      query.cashier = req.user._id;
     }
     // Admin sees all invoices (no filter)
 

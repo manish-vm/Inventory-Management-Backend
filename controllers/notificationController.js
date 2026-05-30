@@ -136,47 +136,6 @@ exports.broadcastToEmployees = async (req, res) => {
   }
 };
 
-
-// Send message from Admin to all customers
-exports.broadcastToCustomers = async (req, res) => {
-  try {
-    const { title, message } = req.body;
-    
-    // Get all customers under this admin's dealer
-    const customers = await User.find({
-      role: 'customer',
-      dealerId: req.user.dealerId
-    }).select('_id');
-
-    if (customers.length === 0) {
-      return res.status(200).json({ 
-        message: 'No customers found under your dealer account',
-        count: 0 
-      });
-    }
-
-    const notifications = await Promise.all(
-      customers.map(customer => 
-        Notification.create({
-          recipient: customer._id,
-          sender: req.user.id,
-          type: 'message',
-          title: title || 'New Message from Admin',
-          message: message
-        })
-      )
-    );
-
-    res.status(201).json({ 
-      message: `Message sent to ${notifications.length} customers`,
-      count: notifications.length 
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-
 // Helper function to create notification (to be used by other controllers)
 exports.createNotification = async (data) => {
   try {
@@ -199,16 +158,14 @@ exports.getAllAdmins = async (req, res) => {
   }
 };
 
-// Get employees and customers under an admin
+// Get employees under an admin
 exports.getAdminUsers = async (req, res) => {
   try {
-    const { type } = req.query; // 'employees' or 'customers'
+    const { type } = req.query;
     
     let query = { dealerId: req.user.dealerId };
     if (type === 'employees') {
       query.role = 'employee';
-    } else if (type === 'customers') {
-      query.role = 'customer';
     }
 
     const users = await User.find(query)

@@ -69,7 +69,14 @@ const StageReviewConfigSchema = new mongoose.Schema({
     default: false
   },
 
-  rejectionQuestions: [ReviewQuestionSchema]
+  rejectionQuestions: [ReviewQuestionSchema],
+
+  reworkQuestionnaireEnabled: {
+    type: Boolean,
+    default: false
+  },
+
+  reworkQuestions: [ReviewQuestionSchema]
 }, {
   timestamps: true
 });

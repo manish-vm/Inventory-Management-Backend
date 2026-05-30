@@ -10,7 +10,6 @@ const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
 const billingRoutes = require('./routes/billing');
 const dashboardRoutes = require('./routes/dashboard');
-const customerRoutes = require("./routes/customers");
 const refundRequestRoutes = require('./routes/refundRequests');
 const superAdminRoutes = require('./routes/superadmin');
 const notificationRoutes = require('./routes/notifications');
@@ -28,6 +27,7 @@ const ManufacturingConfig = require('./models/ManufacturingConfig');
 const stageReviewConfigRoutes = require("./routes/stageReviewConfigRoutes");
 const inspectionRoutes = require('./routes/inspection');
 const formRoutes = require('./routes/forms');
+const defectDetailRoutes = require('./routes/defectDetails');
 
 
 
@@ -63,7 +63,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-app.use("/api/customers", customerRoutes);
 app.use('/api/refund-requests', refundRequestRoutes);
 app.use('/api/superadmin', superAdminRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -80,6 +79,7 @@ app.use('/api/assemblies', assemblyRoutes);
 app.use("/api/stage-review-config", stageReviewConfigRoutes);
 app.use('/api/inspection', inspectionRoutes);
 app.use('/api/forms', formRoutes);
+app.use('/api/defect-details', defectDetailRoutes);
 
 app.get('/', (req, res) => {
   res.send('Welcome to the Inventory and Billing System API - Backend Running Successfully!');

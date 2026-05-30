@@ -1,7 +1,10 @@
 const InspectionFormResponse = require('../models/InspectionFormResponse');
 const InspectionScanLog = require('../models/InspectionScanLog');
 const QRCode = require('../models/QRCode');
+const Product = require('../models/Product');
 const StageMovementLog = require('../models/StageMovementLog');
+const ProcessingStage = require('../models/ProcessingStage');
+const mongoose = require('mongoose');
 const {
   buildProductPayload,
   ensureProcessingStage,
@@ -21,12 +24,23 @@ const getEmployeeName = (user) => user?.name || user?.username || user?.email ||
 
 const normalizeInspectionResult = (value) => String(value || '').trim().toUpperCase();
 const normalizeMovementType = (value) => String(value || 'NONE').trim().toUpperCase();
+const toCount = (value) => Math.max(0, Number(value) || 0);
 const summarizeResponses = (responses = []) =>
   responses
     .filter((item) => item?.answer !== undefined && item?.answer !== null && item?.answer !== '')
     .map((item) => `${item.question || item.questionId}: ${Array.isArray(item.answer) ? item.answer.join(', ') : item.answer}`)
     .join('; ');
 const stageLabel = (stageNumber, stage) => stage?.stageName || `Stage ${stageNumber}`;
+
+const employeeIdMatch = (employeeId) => {
+  const ids = [employeeId].filter(Boolean);
+  const asString = employeeId ? String(employeeId) : '';
+  if (asString && mongoose.Types.ObjectId.isValid(asString)) {
+    ids.push(new mongoose.Types.ObjectId(asString));
+  }
+
+  return { $or: ids.map((id) => ({ employee: id })) };
+};
 
 const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) => {
   if (employee?.role !== 'employee') {
@@ -40,13 +54,16 @@ const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) =>
     };
   }
 
-  const assignedStage = Number(employee.manufacturingLevel || 1);
+  const assignedStageNumbers = Array.isArray(employee.assignedStages) && employee.assignedStages.length
+    ? employee.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
+    : [Number(employee.manufacturingLevel || 1)];
   const productStage = Number(currentStage?.stageNumber || 1);
-  const assignedStageDefinition = stages.find((stage) => Number(stage.stageNumber) === assignedStage);
-  const assignedStageName = stageLabel(assignedStage, assignedStageDefinition);
+  const assignedStageName = assignedStageNumbers
+    .map((stageNumber) => stageLabel(stageNumber, stages.find((stage) => Number(stage.stageNumber) === stageNumber)))
+    .join(', ');
   const productStageName = stageLabel(productStage, currentStage);
 
-  if (assignedStage === productStage) {
+  if (assignedStageNumbers.includes(productStage)) {
     return {
       allowed: true,
       response: {
@@ -65,6 +82,26 @@ const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) =>
       message: `Access Denied. The product is still in ${productStageName} and cannot be processed at your current stage (${assignedStageName}).`
     }
   };
+};
+
+const canEmployeeProcessStage = (employee, stageNumber) => {
+  if (employee?.role !== 'employee') return true;
+  const assignedStageNumbers = Array.isArray(employee.assignedStages) && employee.assignedStages.length
+    ? employee.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
+    : [Number(employee.manufacturingLevel || 1)];
+  return assignedStageNumbers.includes(Number(stageNumber));
+};
+
+const buildAnalysisForms = (stage, formType) => {
+  const formDefinition = formType === 'rejection' ? stage?.reviewForm?.rejectionForm : stage?.reviewForm?.reworkForm;
+  const questions = formDefinition?.questions || formDefinition?.outcomes || [];
+  if (!questions.length) return [];
+
+  return [{
+    formId: formDefinition.formId || `stage-${stage.stageNumber}-${formType}`,
+    formName: formDefinition.formName || `${stage.stageName} ${formType === 'rejection' ? 'Rejection' : 'Rework'} Analysis`,
+    questions
+  }];
 };
 
 exports.scanQRCode = async (req, res) => {
@@ -161,6 +198,661 @@ exports.getProductForEmployee = async (req, res) => {
       history: await InspectionFormResponse.find({ qrId: qrCode.qrId }).sort({ submittedAt: -1 }).limit(10),
       qrCode: payload.qrCode
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.searchProductsForEmployee = async (req, res) => {
+  try {
+    const { q = '' } = req.query;
+    const term = String(q).trim();
+    const assignedStageNumbers = req.user?.role === 'employee'
+      ? (
+          Array.isArray(req.user.assignedStages) && req.user.assignedStages.length
+            ? req.user.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
+            : [Number(req.user.manufacturingLevel || 1)]
+        )
+      : [];
+    const stageMatch = assignedStageNumbers.length
+      ? { currentStage: { $in: assignedStageNumbers } }
+      : {};
+
+    // If employee searches by product name, we must return product-level entry
+    // and show overall total QR count under that product.
+    const productRows = await Product.find(
+      term
+        ? {
+            $or: [
+              { productName: { $regex: term, $options: 'i' } },
+              { partNo: { $regex: term, $options: 'i' } },
+              { productCode: { $regex: term, $options: 'i' } }
+            ]
+          }
+        : {}
+    )
+      .limit(50)
+      .lean();
+
+    // If it matches by productName, collapse results to a single row per productName.
+    // (Task requirement: do not treat partNo/batch as the search unit on employee portal.)
+    const matchedByProductName = term
+      ? productRows.filter((p) => String(p.productName || '').toLowerCase().includes(term.toLowerCase()))
+      : [];
+
+    if (term && matchedByProductName.length) {
+      const uniqueProductNames = Array.from(new Set(matchedByProductName.map((p) => p.productName).filter(Boolean)));
+
+      const rows = [];
+      for (const productName of uniqueProductNames) {
+        const productPartNos = matchedByProductName
+          .filter((p) => p.productName === productName)
+          .map((p) => p.partNo)
+          .filter(Boolean);
+
+        // Total QR codes generated under this product (across all partNos).
+        const availableCount = productPartNos.length
+          ? await QRCode.countDocuments({ partNo: { $in: productPartNos }, ...stageMatch })
+          : 0;
+
+        // Representative QRCode: latest QRCode among the same partNos
+        const latestQrRows = productPartNos.length
+          ? await QRCode.find({ partNo: { $in: productPartNos }, ...stageMatch }).sort({ updatedAt: -1 }).limit(1).lean()
+          : null;
+        const latestQr = latestQrRows?.[0];
+
+        if (!latestQr) continue;
+
+        rows.push({
+          productId: matchedByProductName.find((p) => p.productName === productName)?._id || null,
+          productName,
+          partNo: '',
+          batchNo: '',
+          availableCount,
+          currentStage: latestQr.currentStage || 1
+        });
+      }
+
+      return res.json(rows.slice(0, 20));
+    }
+
+    // Fallback (when search matches partNo/productCode but not productName): keep existing behavior.
+    const productPartNumbers = productRows.map((product) => product.partNo || product.productCode).filter(Boolean);
+    const qrQuery = term
+      ? {
+          $or: [
+            { partNo: { $regex: term, $options: 'i' } },
+            { batchNo: { $regex: term, $options: 'i' } },
+            ...(productPartNumbers.length ? [{ partNo: { $in: productPartNumbers } }] : [])
+          ]
+        }
+      : {};
+
+    const qrRows = await QRCode.find({ ...qrQuery, ...stageMatch }).sort({ updatedAt: -1 }).limit(50).lean();
+    const productByPart = new Map(productRows.map((product) => [product.partNo || product.productCode, product]));
+
+    const rows = [];
+    for (const qrCode of qrRows) {
+      const product =
+        productByPart.get(qrCode.partNo) ||
+        (await Product.findOne({ $or: [{ partNo: qrCode.partNo }, { productCode: qrCode.partNo }] }).lean());
+
+      rows.push({
+        productId: product?._id || qrCode._id,
+        productName: product?.productName || qrCode.partNo,
+        partNo: qrCode.partNo,
+        batchNo: qrCode.batchNo || '',
+        availableCount: qrCode.quantity || await QRCode.countDocuments({ partNo: qrCode.partNo, batchNo: qrCode.batchNo }),
+        currentStage: qrCode.currentStage || 1
+      });
+    }
+
+const deduped = Array.from(
+      new Map(
+        rows.map((row) => [`${row.productName}|${row.partNo}|${row.batchNo}`, row])
+      ).values()
+    );
+
+    return res.json(deduped.slice(0, 20));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getBatchProductForEmployee = async (req, res) => {
+  try {
+    const { key } = req.params;
+
+    const productMatch = await Product.findOne({
+      $or: [
+        { productName: key },
+        {
+          productName: {
+            $regex: `^${String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+            $options: 'i'
+          }
+        },
+        { partNo: key },
+        { productCode: key }
+      ]
+    });
+
+    // If matched by productName, compute total QR count under that product name.
+    if (productMatch?.productName) {
+      const matchedProducts = await Product.find({ productName: productMatch.productName }).select('partNo productCode').lean();
+      const partNos = matchedProducts.map((p) => p.partNo || p.productCode).filter(Boolean);
+
+      const latestQr = partNos.length
+        ? await QRCode.find({ partNo: { $in: partNos } }).sort({ updatedAt: -1 }).limit(1).lean()
+        : null;
+
+      if (!latestQr) {
+        return res.status(404).json({ message: 'Product item not found' });
+      }
+
+      const { config, stages } = await resolveProductContext(latestQr.partNo);
+      const currentStageNumber = latestQr?.currentStage > 0 ? latestQr.currentStage : stages[0]?.stageNumber || 1;
+      const currentStage = getStageByNumber(stages, currentStageNumber);
+
+      const availableCount = partNos.length
+        ? await QRCode.countDocuments({ partNo: { $in: partNos } })
+        : 0;
+
+      await InspectionScanLog.create({
+        qrCode: latestQr?._id,
+        qrId: latestQr?.qrId || productMatch.partNo || productMatch.productCode || productMatch.productName,
+        itemId: latestQr?.qrId || '',
+        employee: req.user._id,
+        employeeName: getEmployeeName(req.user),
+        productName: productMatch.productName,
+        partNo: productMatch.partNo || productMatch.productCode || latestQr.partNo,
+        batchNo: '',
+        partDescription: productMatch.description || productMatch.productName || '',
+        stageNumber: currentStage.stageNumber,
+        stageName: currentStage.stageName,
+        status: 'SCANNED',
+        actionTaken: 'LOOKUP',
+        location: currentStage.stageName
+      });
+
+      res.json({
+        product: {
+          productId: productMatch._id,
+          productName: productMatch.productName,
+          partNo: productMatch.partNo || productMatch.productCode || latestQr.partNo,
+          batchNo: '',
+          partDescription: productMatch.description || productMatch.productName || '',
+          availableCount,
+          currentStage: currentStage.stageName,
+          currentStageNumber
+        },
+        stage: currentStage,
+        stages: stages.map((stage) => ({
+          stageNumber: stage.stageNumber,
+          stageName: stage.stageName,
+          stageType: stage.stageType,
+          selectable: canEmployeeProcessStage(req.user, stage.stageNumber)
+        })),
+        forms: (() => {
+          const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
+          return questions.length
+            ? [
+                {
+                  formId: currentStage.reviewForm.formId || `stage-${currentStage.stageNumber}-inspection`,
+                  formName: currentStage.reviewForm.formName || `${currentStage.stageName} Inspection`,
+                  questions
+                }
+              ]
+            : [];
+        })(),
+        rejectionForms: buildAnalysisForms(currentStage, 'rejection'),
+        reworkForms: buildAnalysisForms(currentStage, 'rework'),
+        configId: config?._id
+      });
+      return;
+    }
+
+    // Fallback: key matched by partNo/productCode/batch.
+    const qrCode = await QRCode.findOne({
+      $or: [
+        { partNo: key },
+        { batchNo: key },
+        ...(productMatch?.partNo || productMatch?.productCode ? [{ partNo: productMatch.partNo || productMatch.productCode }] : [])
+      ]
+    }).sort({ updatedAt: -1 });
+
+    if (!qrCode && !productMatch) return res.status(404).json({ message: 'Product not found' });
+
+    const partNo = qrCode?.partNo || productMatch.partNo || productMatch.productCode;
+    const { product, config, stages } = await resolveProductContext(partNo);
+    const resolvedProduct = product || productMatch;
+    const currentStageNumber = qrCode?.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
+    const currentStage = getStageByNumber(stages, currentStageNumber);
+    const availableCount = qrCode?.quantity || (await QRCode.countDocuments({ partNo })) || resolvedProduct?.quantity || resolvedProduct?.stock || 0;
+
+    await InspectionScanLog.create({
+      qrCode: qrCode?._id,
+      qrId: qrCode?.qrId || partNo,
+      itemId: qrCode?.qrId || '',
+      employee: req.user._id,
+      employeeName: getEmployeeName(req.user),
+      productName: resolvedProduct?.productName || partNo,
+      partNo,
+      batchNo: qrCode?.batchNo || '',
+      partDescription: resolvedProduct?.description || resolvedProduct?.productName || '',
+      stageNumber: currentStage.stageNumber,
+      stageName: currentStage.stageName,
+      status: 'SCANNED',
+      actionTaken: 'LOOKUP',
+      location: currentStage.stageName
+    });
+
+    res.json({
+      product: {
+        productId: resolvedProduct?._id || qrCode?._id,
+        productName: resolvedProduct?.productName || partNo,
+        partNo,
+        batchNo: qrCode?.batchNo || '',
+        partDescription: resolvedProduct?.description || resolvedProduct?.productName || '',
+        availableCount,
+        currentStage: currentStage.stageName,
+        currentStageNumber
+      },
+      stage: currentStage,
+      stages: stages.map((stage) => ({
+        stageNumber: stage.stageNumber,
+        stageName: stage.stageName,
+        stageType: stage.stageType,
+        selectable: canEmployeeProcessStage(req.user, stage.stageNumber)
+      })),
+      forms: (() => {
+        const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
+        return questions.length
+          ? [
+              {
+                formId: currentStage.reviewForm.formId || `stage-${currentStage.stageNumber}-inspection`,
+                formName: currentStage.reviewForm.formName || `${currentStage.stageName} Inspection`,
+                questions
+              }
+            ]
+          : [];
+      })(),
+      rejectionForms: buildAnalysisForms(currentStage, 'rejection'),
+      reworkForms: buildAnalysisForms(currentStage, 'rework'),
+      configId: config?._id
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.submitBatchInspectionResponse = async (req, res) => {
+  try {
+    const {
+      productId = '',
+      partNo,
+      batchNo = '',
+      productName = '',
+      stageId,
+      stageName = '',
+      acceptedCount,
+      rejectedCount,
+      reworkCount,
+      inspectionFormResponses = [],
+      rejectionFormResponses = [],
+      reworkFormResponses = [],
+      remarks = ''
+    } = req.body;
+
+    if (!partNo) return res.status(400).json({ message: 'partNo is required' });
+    const stageNumber = Number(stageId);
+    if (!Number.isFinite(stageNumber)) return res.status(400).json({ message: 'stageId is required' });
+    if (!canEmployeeProcessStage(req.user, stageNumber)) {
+      return res.status(403).json({ message: 'You are not assigned to this manufacturing stage' });
+    }
+
+    // Accepted: use the submitted UI count as-is.
+    // Rejected/Rework: derive counts from selected options in the corresponding analysis forms.
+    // This matches the task requirement: counts must be computed based on the options selected,
+    // and if multiple choice exists under each option, we aggregate it into the overall reject count.
+
+    const deriveChoiceCountsFromResponses = (responses = []) => {
+      // Expected shape from QuestionCountGrid:
+      // - Selection response: { questionId, question, type: 'checkbox'|'multiSelect'|'radio'..., answer: string|string[] }
+      // - Count response per option: { questionId, question, type: 'count', optionKey, answer: <number> }
+      //
+      // Requirement: rejected/rework totals must be calculated from numeric counts entered
+      // for the selected options, not just number of selections.
+
+      const normalizeAnswerValues = (val) => {
+        if (Array.isArray(val)) return val.map(String).filter(Boolean);
+        if (val === null || val === undefined) return [];
+        const s = String(val).trim();
+        return s ? [s] : [];
+      };
+
+      let overall = 0;
+      const perQuestion = {};
+
+      // Build: for each question, track which options were selected and their entered counts.
+      const selectedByQuestion = {};
+      const countsByQuestionOption = {};
+      const freeFormCountsByQuestion = {};
+
+      for (const r of responses || []) {
+        const qKey = String(r?.questionId || r?.question || 'unknown');
+        const type = String(r?.type || 'text').toLowerCase();
+
+        if (type === 'count') {
+          const optionKey = String(r?.optionKey || '').trim();
+          if (!optionKey) continue;
+          const countVal = Math.max(0, Number(r?.answer) || 0);
+          if (optionKey === '__response__') {
+            freeFormCountsByQuestion[qKey] = (freeFormCountsByQuestion[qKey] || 0) + countVal;
+            continue;
+          }
+          if (!countsByQuestionOption[qKey]) countsByQuestionOption[qKey] = {};
+          countsByQuestionOption[qKey][optionKey] = countVal;
+          continue;
+        }
+
+        // Selection-bearing responses
+        const selectedVals = normalizeAnswerValues(r?.answer);
+        if (!selectedByQuestion[qKey]) selectedByQuestion[qKey] = new Set();
+        for (const v of selectedVals) selectedByQuestion[qKey].add(v);
+      }
+
+      // Sum counts only for selected options.
+      for (const [qKey, selectedSet] of Object.entries(selectedByQuestion)) {
+        let qSum = 0;
+        const countsForQ = countsByQuestionOption[qKey] || {};
+        for (const opt of selectedSet) {
+          const c = Math.max(0, Number(countsForQ[opt]) || 0);
+          qSum += c;
+        }
+        overall += qSum;
+        perQuestion[qKey] = qSum;
+      }
+
+      for (const [qKey, count] of Object.entries(freeFormCountsByQuestion)) {
+        const c = Math.max(0, Number(count) || 0);
+        overall += c;
+        perQuestion[qKey] = (perQuestion[qKey] || 0) + c;
+      }
+
+      return { overall, perQuestion };
+    };
+
+    const derivedRejected = deriveChoiceCountsFromResponses(rejectionFormResponses);
+    const derivedRework = deriveChoiceCountsFromResponses(reworkFormResponses);
+
+    const counts = {
+      accepted: toCount(acceptedCount),
+      rejected: derivedRejected.overall,
+      rework: derivedRework.overall
+    };
+
+    const total = counts.accepted + counts.rejected + counts.rework;
+
+
+    // Log overall reject count (requirement) and per derived breakdown.
+    console.log('[inspection submitBatchInspectionResponse] Derived counts =>', {
+      accepted: counts.accepted,
+      rejectedDerivedFromOptions: counts.rejected,
+      reworkDerivedFromOptions: counts.rework,
+      total,
+      derivedRejectedByQuestion: derivedRejected.perQuestion,
+      derivedReworkByQuestion: derivedRework.perQuestion
+    });
+    const qrCode = await QRCode.findOne({ partNo, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
+    const availableCount = qrCode?.quantity || await QRCode.countDocuments({ partNo, ...(batchNo ? { batchNo } : {}) });
+    if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
+    if (total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
+    if ((counts.rejected > 0 || counts.rework > 0) && !String(remarks).trim()) {
+      return res.status(400).json({ message: 'Remarks are required when rejected or rework items are present' });
+    }
+
+    const { product, stages } = await resolveProductContext(partNo);
+    const stage = getStageByNumber(stages, stageNumber);
+
+    // Update ProductStage counters based on submitted counts.
+    // Keep QR logic only for trace/movement; ProductStage becomes source of truth for stage review stats.
+    // NOTE: availableQuantity is expected to be initialized when ProductStage rows are created.
+    // If not found, create it with sane defaults.
+    const ProductStage = require('../models/ProductStage');
+
+    const resolvedProductId = product?._id || productId;
+
+
+    // Ensure ProductStage row exists for this product+stage
+    const productStage = await ProductStage.findOneAndUpdate(
+      {
+        productId: resolvedProductId,
+        partNo,
+        stageNumber
+      },
+      {
+        $setOnInsert: {
+          productId: resolvedProductId,
+
+          partNo,
+          stageNumber,
+          stageName: stage?.stageName || `Stage ${stageNumber}`,
+          availableQuantity: availableCount,
+          acceptedCount: 0,
+          rejectedCount: 0,
+          reworkCount: 0,
+          pendingCount: availableCount
+        }
+      },
+      { new: true, upsert: true }
+    );
+
+    // Recalculate pending based on counters.
+    const nextAccepted = Number(productStage.acceptedCount || 0) + counts.accepted;
+    const nextRejected = Number(productStage.rejectedCount || 0) + counts.rejected;
+    const nextRework = Number(productStage.reworkCount || 0) + counts.rework;
+    const nextPending = Math.max(Number(productStage.availableQuantity || availableCount || 0) - (nextAccepted + nextRejected + nextRework), 0);
+
+    await ProductStage.updateOne(
+      {
+        _id: productStage._id
+      },
+      {
+        $set: {
+          acceptedCount: nextAccepted,
+          rejectedCount: nextRejected,
+          reworkCount: nextRework,
+          pendingCount: nextPending
+        }
+      }
+    );
+
+    await ProcessingStage.findOneAndUpdate(
+      {
+        partNo,
+        stageNumber,
+        $or: [{ qrId: { $exists: false } }, { qrId: null }]
+      },
+      {
+        $set: {
+          partNo,
+          stageNumber,
+          stageName: stage?.stageName || `Stage ${stageNumber}`,
+          inputQuantity: Number(productStage.availableQuantity || availableCount || total || 0),
+          acceptedQuantity: nextAccepted,
+          rejectedQuantity: nextRejected,
+          reworkQuantity: nextRework,
+          outputQuantity: nextAccepted,
+          status: nextPending > 0 ? 'in_progress' : 'completed',
+          operator: getEmployeeName(req.user)
+        }
+      },
+      { new: true, upsert: true }
+    );
+
+
+
+    await InspectionScanLog.create({
+      qrCode: qrCode?._id,
+      qrId: qrCode?.qrId || `${partNo}-${batchNo || 'batch'}`,
+      itemId: qrCode?.qrId || '',
+      employee: req.user._id,
+      employeeName: getEmployeeName(req.user),
+      productName: productName || product?.productName || partNo,
+      partNo,
+      batchNo,
+      partDescription: product?.description || product?.productName || '',
+      stageNumber,
+      stageName: stageName || stage?.stageName || `Stage ${stageNumber}`,
+      status: counts.rejected > 0 ? 'REJECTED' : counts.rework > 0 ? 'REWORK' : 'ACCEPTED',
+      actionTaken: 'BATCH_SUBMIT',
+      remarks: String(remarks || '').trim(),
+      location: stageName || stage?.stageName || `Stage ${stageNumber}`,
+      metadata: {
+        acceptedCount: counts.accepted,
+        rejectedCount: counts.rejected,
+        reworkCount: counts.rework
+      }
+    });
+
+    const responseDoc = await InspectionFormResponse.create({
+
+      qrCode: qrCode?._id,
+      productId: resolvedProductId,
+
+      qrId: qrCode?.qrId || `${partNo}-${batchNo || 'batch'}`,
+      itemId: '',
+      employee: req.user._id,
+      employeeName: getEmployeeName(req.user),
+      productName: productName || product?.productName || partNo,
+      partNo,
+      batchNo,
+      partDescription: product?.description || product?.productName || '',
+      stageNumber,
+      stageName: stageName || stage?.stageName || `Stage ${stageNumber}`,
+      formId: `stage-${stageNumber}`,
+      formName: `${stageName || stage?.stageName || `Stage ${stageNumber}`} Inspection`,
+      inspectionResult: counts.rejected > 0 ? 'REJECTED' : counts.rework > 0 ? 'REWORK' : 'ACCEPTED',
+      acceptedCount: counts.accepted,
+      rejectedCount: counts.rejected,
+      reworkCount: counts.rework,
+      responses: inspectionFormResponses,
+      rejectionFormResponses,
+      reworkFormResponses,
+      remarks: String(remarks || '').trim(),
+      movement: {
+        type: 'NONE',
+        fromStageNumber: stageNumber,
+        fromStageName: stageName || stage?.stageName,
+        toStageNumber: stageNumber,
+        toStageName: stageName || stage?.stageName
+      }
+    });
+
+    // Stage movement for batch:
+    // - Use only accepted/rejected/rework counts (not QR generator "quantity" notion).
+    // - Select exactly N QRCode documents currently at this stage and apply transitions.
+    const currentStageIndex = stages.findIndex((s) => Number(s.stageNumber) === Number(stageNumber));
+    const nextStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] : null;
+
+    const qrsPool = await QRCode.find({
+      partNo,
+      ...(batchNo ? { batchNo } : {}),
+      currentStage: stageNumber
+    })
+      .sort({ createdAt: 1 })
+      .limit(total);
+
+    const acceptedQrs = qrsPool.slice(0, counts.accepted);
+    const rejectedQrs = qrsPool.slice(counts.accepted, counts.accepted + counts.rejected);
+    const reworkQrs = qrsPool.slice(counts.accepted + counts.rejected, counts.accepted + counts.rejected + counts.rework);
+
+    const operatorName = getEmployeeName(req.user);
+
+    // Move accepted to next stage (if exists), else mark as accepted at current stage (final stage)
+    if (acceptedQrs.length && nextStage) {
+      await QRCode.updateMany(
+        { _id: { $in: acceptedQrs.map((q) => q._id) } },
+        { $set: { currentStage: nextStage.stageNumber, status: 'processing' } }
+      );
+
+      for (const qrCodeItem of acceptedQrs) {
+        const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
+        processingStage.reviewStatus = 'accepted';
+        processingStage.status = 'completed';
+        processingStage.rejectionReason = '';
+        processingStage.validatedBy = operatorName;
+        processingStage.operator = operatorName;
+        processingStage.validated = true;
+        await processingStage.save();
+
+        await StageMovementLog.create({
+          qrCode: qrCodeItem._id,
+          qrId: qrCodeItem.qrId,
+          itemId: qrCodeItem.qrId,
+          partNo: qrCodeItem.partNo,
+          batchNo: qrCodeItem.batchNo || '',
+          productName: product?.productName || qrCodeItem.partNo,
+          employee: req.user._id,
+          employeeName: operatorName,
+          fromStageNumber: stageNumber,
+          fromStageName: stage.stageName,
+          toStageNumber: nextStage.stageNumber,
+          toStageName: nextStage.stageName,
+          movementType: 'FORWARD',
+          remarks: String(remarks || '')
+        });
+
+        await ensureProcessingStage({ qrCode: qrCodeItem, stage: nextStage, operatorName });
+      }
+    } else if (acceptedQrs.length) {
+      await QRCode.updateMany(
+        { _id: { $in: acceptedQrs.map((q) => q._id) } },
+        { $set: { status: 'accepted' } }
+      );
+
+      for (const qrCodeItem of acceptedQrs) {
+        const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
+        processingStage.reviewStatus = 'accepted';
+        processingStage.status = 'completed';
+        processingStage.rejectionReason = '';
+        processingStage.validatedBy = operatorName;
+        processingStage.operator = operatorName;
+        processingStage.validated = true;
+        await processingStage.save();
+      }
+    }
+
+    // Apply rejected (stay in same stage)
+    for (const qrCodeItem of rejectedQrs) {
+      await QRCode.updateOne({ _id: qrCodeItem._id }, { $set: { status: 'rejected', currentStage: stageNumber } });
+
+      const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
+      processingStage.reviewStatus = 'rejected';
+      processingStage.status = 'completed';
+      processingStage.rejectionReason = String(remarks || '');
+      processingStage.validatedBy = operatorName;
+      processingStage.operator = operatorName;
+      processingStage.validated = true;
+      await processingStage.save();
+    }
+
+    // Apply rework (stay in same stage unless your product flow decides otherwise)
+    for (const qrCodeItem of reworkQrs) {
+      await QRCode.updateOne({ _id: qrCodeItem._id }, { $set: { status: 'rework', currentStage: stageNumber } });
+
+      const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
+      processingStage.reviewStatus = 'rework';
+      processingStage.status = 'completed';
+      processingStage.rejectionReason = String(remarks || '');
+      processingStage.validatedBy = operatorName;
+      processingStage.operator = operatorName;
+      processingStage.validated = true;
+      await processingStage.save();
+    }
+
+    res.status(201).json({ message: 'Batch inspection submitted', response: responseDoc });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -333,15 +1025,49 @@ exports.submitInspection = async (req, res) => {
 };
 
 exports.submitEmployeeInspectionResponse = async (req, res) => {
+  // Batch path: keep existing behavior.
+  if (
+    req.body.acceptedCount !== undefined ||
+    req.body.rejectedCount !== undefined ||
+    req.body.reworkCount !== undefined
+  ) {
+    return exports.submitBatchInspectionResponse(req, res);
+  }
+
+  // Normalise common frontend payload shapes into what submitInspection expects:
+  // - qrId
+  // - inspectionResult: ACCEPTED|REJECTED|REWORK
+  // - movementType: NONE|FORWARD|BACKWARD
+  // - responses: [{ questionId/question, answer }]
+  // - remarks
+  //
+  // Important: do NOT blindly overwrite req.body if frontend already sent the correct keys.
+  const {
+    itemId,
+    qrId,
+    selectedStatus,
+    inspectionResult,
+    movementType,
+    selectedMovementType,
+    remarks,
+    formResponses,
+    responses,
+    formId,
+    formName
+  } = req.body || {};
+
   req.body = {
-    qrId: req.body.itemId || req.body.qrId,
-    inspectionResult: req.body.selectedStatus,
-    movementType: req.body.movementType || 'NONE',
-    remarks: req.body.remarks || '',
-    responses: req.body.formResponses || [],
-    formId: req.body.formId,
-    formName: req.body.formName
+    ...req.body,
+    qrId: qrId || itemId,
+    inspectionResult: inspectionResult || selectedStatus,
+    movementType: movementType || selectedMovementType || 'NONE',
+    remarks: remarks ?? req.body?.remarks ?? '',
+    responses: formResponses || responses || [],
+    formId: formId,
+    formName: formName
   };
+
+  // Reuse existing submitInspection implementation.
   return exports.submitInspection(req, res);
 };
 
@@ -372,10 +1098,10 @@ exports.getDashboard = async (req, res) => {
     res.json({
       today: {
         totalScans: scans,
-        accepted: responses.filter((item) => item.inspectionResult === 'ACCEPTED').length,
-        rejected: responses.filter((item) => item.inspectionResult === 'REJECTED').length,
-        rework: responses.filter((item) => item.inspectionResult === 'REWORK').length,
-        productsProcessedToday: responses.length,
+        accepted: responses.reduce((sum, item) => sum + (item.acceptedCount || (item.inspectionResult === 'ACCEPTED' ? 1 : 0)), 0),
+        rejected: responses.reduce((sum, item) => sum + (item.rejectedCount || (item.inspectionResult === 'REJECTED' ? 1 : 0)), 0),
+        rework: responses.reduce((sum, item) => sum + (item.reworkCount || (item.inspectionResult === 'REWORK' ? 1 : 0)), 0),
+        productsProcessedToday: responses.reduce((sum, item) => sum + (item.acceptedCount || 0) + (item.rejectedCount || 0) + (item.reworkCount || 0), 0) || responses.length,
         pendingReviews: Math.max(scans - responses.length, 0),
         forwardedToNextStage: movements.filter((item) => item.movementType === 'FORWARD').length,
         sentBackToPreviousStage: movements.filter((item) => item.movementType === 'BACKWARD').length
@@ -390,7 +1116,12 @@ exports.getDashboard = async (req, res) => {
 exports.getScanLogs = async (req, res) => {
   try {
     const { search = '', page = 1, limit = 20 } = req.query;
-    const match = search
+
+    // Only show scans for the logged-in employee.
+    // Aggregation does not cast ObjectId strings, so match both forms.
+    const employeeMatch = employeeIdMatch(req.user._id);
+
+    const searchMatch = search
       ? {
           $or: [
             { partNo: { $regex: search, $options: 'i' } },
@@ -400,12 +1131,19 @@ exports.getScanLogs = async (req, res) => {
         }
       : {};
 
+    const matchStages = [employeeMatch];
+    if (Object.keys(searchMatch).length) matchStages.push(searchMatch);
+
     const grouped = await InspectionScanLog.aggregate([
-      { $match: match },
+      { $match: { $and: matchStages } },
+
+      // Ensure "latest" is deterministic
       { $sort: { updatedAt: -1 } },
       {
         $group: {
-          _id: '$partNo',
+          // Group by productName; we will also expose partNo (QR partNo) separately.
+          _id: '$productName',
+          productName: { $first: '$productName' },
           partNo: { $first: '$partNo' },
           partDescription: { $first: '$partDescription' },
           currentStage: { $first: '$stageName' },
@@ -413,29 +1151,68 @@ exports.getScanLogs = async (req, res) => {
           lastUpdated: { $first: '$updatedAt' }
         }
       },
+
       { $sort: { lastUpdated: -1 } },
       { $skip: (Number(page) - 1) * Number(limit) },
       { $limit: Number(limit) }
     ]);
 
-    const rows = await Promise.all(grouped.map(async (row) => {
-      const [totalIdealProductCount, acceptedCount, rejectedCount, reworkCount] = await Promise.all([
-        QRCode.countDocuments({ partNo: row.partNo }),
-        InspectionFormResponse.countDocuments({ partNo: row.partNo, inspectionResult: 'ACCEPTED' }),
-        InspectionFormResponse.countDocuments({ partNo: row.partNo, inspectionResult: 'REJECTED' }),
-        InspectionFormResponse.countDocuments({ partNo: row.partNo, inspectionResult: 'REWORK' })
-      ]);
-      return {
-        ...row,
-        totalIdealProductCount,
-        acceptedCount,
-        rejectedCount,
-        reworkCount,
-        pendingCount: Math.max(totalIdealProductCount - acceptedCount - rejectedCount - reworkCount, 0)
-      };
-    }));
+    const rows = await Promise.all(
+      grouped.map(async (row) => {
+        // Build metrics using the underlying QRCode.partNo values.
+        const relatedPartNos = await InspectionScanLog.distinct('partNo', {
+          ...employeeMatch,
+          productName: row.productName
+        });
 
-    res.json({ rows, page: Number(page), limit: Number(limit) });
+
+        const [totalIdealProductCount, acceptedCount, rejectedCount, reworkCount] = await Promise.all([
+          QRCode.countDocuments({ partNo: { $in: relatedPartNos } }),
+          InspectionFormResponse.aggregate([
+            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $group: { _id: null, count: { $sum: '$acceptedCount' } } }
+          ]),
+          InspectionFormResponse.aggregate([
+            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $group: { _id: null, count: { $sum: '$rejectedCount' } } }
+          ]),
+          InspectionFormResponse.aggregate([
+            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $group: { _id: null, count: { $sum: '$reworkCount' } } }
+          ])
+        ]);
+
+        const acceptedItems = acceptedCount[0]?.count || 0;
+        const rejectedItems = rejectedCount[0]?.count || 0;
+        const reworkItems = reworkCount[0]?.count || 0;
+
+        return {
+          // Keep frontend compatibility:
+          // - UI column "Part Number" will show partNo
+          // - UI "Part Description" shows partDescription
+          // - Add productName for future UI improvements
+          ...row,
+          productName: row.productName || '',
+          totalIdealProductCount,
+          acceptedCount: acceptedItems,
+          rejectedCount: rejectedItems,
+          reworkCount: reworkItems,
+          pendingCount: Math.max(
+            totalIdealProductCount - acceptedItems - rejectedItems - reworkItems,
+            0
+          )
+        };
+      })
+    );
+
+
+    res.json({
+      success: true,
+      logs: rows,
+      rows,
+      page: Number(page),
+      limit: Number(limit)
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -512,20 +1289,29 @@ exports.getAdminResponses = async (req, res) => {
     const totalResponses = await InspectionFormResponse.countDocuments(query);
     const analyticsRows = await InspectionFormResponse.aggregate([
       { $match: query },
-      { $group: { _id: '$inspectionResult', count: { $sum: 1 } } }
+      {
+        $group: {
+          _id: null,
+          acceptedItems: { $sum: '$acceptedCount' },
+          rejectedItems: { $sum: '$rejectedCount' },
+          reworkItems: { $sum: '$reworkCount' },
+          acceptedResponses: { $sum: { $cond: [{ $eq: ['$inspectionResult', 'ACCEPTED'] }, 1, 0] } },
+          rejectedResponses: { $sum: { $cond: [{ $eq: ['$inspectionResult', 'REJECTED'] }, 1, 0] } },
+          reworkResponses: { $sum: { $cond: [{ $eq: ['$inspectionResult', 'REWORK'] }, 1, 0] } }
+        }
+      }
     ]);
 
     const analytics = {
       totalResponses,
       acceptedResponses: 0,
       rejectedResponses: 0,
-      reworkResponses: 0
+      reworkResponses: 0,
+      acceptedItems: 0,
+      rejectedItems: 0,
+      reworkItems: 0
     };
-    analyticsRows.forEach((row) => {
-      if (row._id === 'ACCEPTED') analytics.acceptedResponses = row.count;
-      if (row._id === 'REJECTED') analytics.rejectedResponses = row.count;
-      if (row._id === 'REWORK') analytics.reworkResponses = row.count;
-    });
+    Object.assign(analytics, analyticsRows[0] || {});
 
     res.json({ responses: enrichedResponses, analytics });
   } catch (error) {
@@ -538,6 +1324,73 @@ exports.getResponseById = async (req, res) => {
     const response = await InspectionFormResponse.findById(req.params.id);
     if (!response) return res.status(404).json({ message: 'Response not found' });
     res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getProductionAnalytics = async (req, res) => {
+  try {
+    const [totals, stageWise, productWise, employeeWise] = await Promise.all([
+      InspectionFormResponse.aggregate([
+        {
+          $group: {
+            _id: null,
+            accepted: { $sum: '$acceptedCount' },
+            rejected: { $sum: '$rejectedCount' },
+            rework: { $sum: '$reworkCount' }
+          }
+        }
+      ]),
+      InspectionFormResponse.aggregate([
+        {
+          $group: {
+            _id: '$stageName',
+            accepted: { $sum: '$acceptedCount' },
+            rejected: { $sum: '$rejectedCount' },
+            rework: { $sum: '$reworkCount' }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      InspectionFormResponse.aggregate([
+        {
+          $group: {
+            _id: '$productName',
+            accepted: { $sum: '$acceptedCount' },
+            rejected: { $sum: '$rejectedCount' },
+            rework: { $sum: '$reworkCount' }
+          }
+        },
+        { $sort: { accepted: -1 } },
+        { $limit: 10 }
+      ]),
+      InspectionFormResponse.aggregate([
+        {
+          $group: {
+            _id: '$employeeName',
+            accepted: { $sum: '$acceptedCount' },
+            rejected: { $sum: '$rejectedCount' },
+            rework: { $sum: '$reworkCount' }
+          }
+        },
+        { $sort: { accepted: -1 } },
+        { $limit: 10 }
+      ])
+    ]);
+    const total = totals[0] || { accepted: 0, rejected: 0, rework: 0 };
+    const processed = total.accepted + total.rejected + total.rework;
+    res.json({
+      totals: {
+        ...total,
+        acceptancePercent: processed ? Math.round((total.accepted / processed) * 100) : 0,
+        rejectionPercent: processed ? Math.round((total.rejected / processed) * 100) : 0,
+        reworkPercent: processed ? Math.round((total.rework / processed) * 100) : 0
+      },
+      stageWise,
+      productWise,
+      employeeWise
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

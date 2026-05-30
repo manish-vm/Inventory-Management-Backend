@@ -3,7 +3,7 @@ const router = express.Router();
 const { auth, adminOnly, authAndEmployee } = require('../middleware/authMiddleware');
 const brandModelController = require('../controllers/brandModelController');
 
-// Public-ish for authenticated users (admins will manage, employees/customers can still view dropdowns)
+// Public-ish for authenticated users (admins manage, employees can still view dropdowns)
 router.get('/brands', auth, authAndEmployee, brandModelController.getActiveBrands);
 router.get('/models', auth, authAndEmployee, brandModelController.getAllActiveModels);
 router.get('/brands/models', auth, authAndEmployee, brandModelController.getAllActiveModels);

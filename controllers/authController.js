@@ -32,61 +32,7 @@ exports.register = async (req, res) => {
   }
 };
 
-// @desc    Login user (superadmin, admin, employee, or customer)
-// @route   POST /api/auth/login
-exports.signup = async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Name, email, and password are required' });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const existingUser = await User.findOne({ email: normalizedEmail });
-    if (existingUser) {
-      return res.status(400).json({ message: 'User already exists' });
-    }
-
-    const baseUsername = buildUsernameFromName(name) || normalizedEmail.split('@')[0];
-    let username = baseUsername;
-    let usernameSuffix = 1;
-
-    while (await User.findOne({ username })) {
-      username = `${baseUsername}.${usernameSuffix}`;
-      usernameSuffix += 1;
-    }
-
-    const user = new User({
-      name: name.trim(),
-      username,
-      email: normalizedEmail,
-      password,
-      role: 'customer',
-      isActive: true,
-    });
-
-    await user.save();
-
-    const token = generateToken(user._id);
-
-    res.status(201).json({
-      token,
-      user: {
-        id: user._id,
-        username: user.username,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// @desc    Login user (superadmin, admin, employee, or customer)
+// @desc    Login user (superadmin, admin, or employee)
 // @route   POST /api/auth/login
 exports.login = async (req, res) => {
   try {

@@ -9,7 +9,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String },
   role: { 
     type: String, 
-    enum: ['superadmin', 'admin', 'employee', 'customer'], 
+    enum: ['superadmin', 'admin', 'employee'], 
     default: 'employee' 
   },
   dealerId: { 
@@ -22,6 +22,10 @@ const userSchema = new mongoose.Schema({
     min: 1,
     max: 10 // Assuming levels 1-10
   },
+  assignedStages: [{
+    stageNumber: Number,
+    stageName: String
+  }],
   isActive: { type: Boolean, default: true },
   monthlySalesTarget: { type: Number, default: 0 },
   salesCount: { type: Number, default: 0 }
