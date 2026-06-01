@@ -92,6 +92,33 @@ const canEmployeeProcessStage = (employee, stageNumber) => {
   return assignedStageNumbers.includes(Number(stageNumber));
 };
 
+const getCurrentQrForPartNos = async (partNos = []) => {
+  const normalizedPartNos = partNos.filter(Boolean);
+  if (!normalizedPartNos.length) return null;
+
+  return QRCode.findOne({ partNo: { $in: normalizedPartNos } })
+    .sort({ currentStage: -1, updatedAt: -1 })
+    .lean();
+};
+
+const buildEmployeeStageRows = async ({ partNos = [], stages = [], employee }) => {
+  const normalizedPartNos = partNos.filter(Boolean);
+  return Promise.all(
+    stages.map(async (stage) => ({
+      stageNumber: stage.stageNumber,
+      stageName: stage.stageName,
+      stageType: stage.stageType,
+      selectable: canEmployeeProcessStage(employee, stage.stageNumber),
+      availableCount: normalizedPartNos.length
+        ? await QRCode.countDocuments({
+            partNo: { $in: normalizedPartNos },
+            currentStage: Number(stage.stageNumber)
+          })
+        : 0
+    }))
+  );
+};
+
 const buildAnalysisForms = (stage, formType) => {
   const formDefinition = formType === 'rejection' ? stage?.reviewForm?.rejectionForm : stage?.reviewForm?.reworkForm;
   const questions = formDefinition?.questions || formDefinition?.outcomes || [];
@@ -305,30 +332,28 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const matchedProducts = await Product.find({ productName: productMatch.productName }).select('partNo productCode').lean();
       const partNos = matchedProducts.map((p) => p.partNo || p.productCode).filter(Boolean);
 
-      const latestQr = partNos.length
-        ? await QRCode.find({ partNo: { $in: partNos } }).sort({ updatedAt: -1 }).limit(1).lean()
-        : null;
+      const currentQr = await getCurrentQrForPartNos(partNos);
 
-      if (!latestQr) {
+      if (!currentQr) {
         return res.status(404).json({ message: 'Product item not found' });
       }
 
-      const { config, stages } = await resolveProductContext(latestQr.partNo);
-      const currentStageNumber = latestQr?.currentStage > 0 ? latestQr.currentStage : stages[0]?.stageNumber || 1;
+      const { config, stages } = await resolveProductContext(currentQr.partNo);
+      const currentStageNumber = currentQr?.currentStage > 0 ? currentQr.currentStage : stages[0]?.stageNumber || 1;
       const currentStage = getStageByNumber(stages, currentStageNumber);
 
       const availableCount = partNos.length
-        ? await QRCode.countDocuments({ partNo: { $in: partNos } })
+        ? await QRCode.countDocuments({ partNo: { $in: partNos }, currentStage: currentStageNumber })
         : 0;
 
       await InspectionScanLog.create({
-        qrCode: latestQr?._id,
-        qrId: latestQr?.qrId || productMatch.partNo || productMatch.productCode || productMatch.productName,
-        itemId: latestQr?.qrId || '',
+        qrCode: currentQr?._id,
+        qrId: currentQr?.qrId || productMatch.partNo || productMatch.productCode || productMatch.productName,
+        itemId: currentQr?.qrId || '',
         employee: req.user._id,
         employeeName: getEmployeeName(req.user),
         productName: productMatch.productName,
-        partNo: productMatch.partNo || productMatch.productCode || latestQr.partNo,
+        partNo: productMatch.partNo || productMatch.productCode || currentQr.partNo,
         batchNo: '',
         partDescription: productMatch.description || productMatch.productName || '',
         stageNumber: currentStage.stageNumber,
@@ -342,7 +367,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
         product: {
           productId: productMatch._id,
           productName: productMatch.productName,
-          partNo: productMatch.partNo || productMatch.productCode || latestQr.partNo,
+          partNo: productMatch.partNo || productMatch.productCode || currentQr.partNo,
           batchNo: '',
           partDescription: productMatch.description || productMatch.productName || '',
           availableCount,
@@ -350,12 +375,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
           currentStageNumber
         },
         stage: currentStage,
-        stages: stages.map((stage) => ({
-          stageNumber: stage.stageNumber,
-          stageName: stage.stageName,
-          stageType: stage.stageType,
-          selectable: canEmployeeProcessStage(req.user, stage.stageNumber)
-        })),
+        stages: await buildEmployeeStageRows({ partNos, stages, employee: req.user }),
         forms: (() => {
           const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
           return questions.length
@@ -391,7 +411,11 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const resolvedProduct = product || productMatch;
     const currentStageNumber = qrCode?.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
-    const availableCount = qrCode?.quantity || (await QRCode.countDocuments({ partNo })) || resolvedProduct?.quantity || resolvedProduct?.stock || 0;
+    const availableCount = await QRCode.countDocuments({ partNo, currentStage: currentStageNumber }) ||
+      qrCode?.quantity ||
+      resolvedProduct?.quantity ||
+      resolvedProduct?.stock ||
+      0;
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
@@ -422,12 +446,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
         currentStageNumber
       },
       stage: currentStage,
-      stages: stages.map((stage) => ({
-        stageNumber: stage.stageNumber,
-        stageName: stage.stageName,
-        stageType: stage.stageType,
-        selectable: canEmployeeProcessStage(req.user, stage.stageNumber)
-      })),
+      stages: await buildEmployeeStageRows({ partNos: [partNo], stages, employee: req.user }),
       forms: (() => {
         const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
         return questions.length
@@ -831,9 +850,10 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         await ensureProcessingStage({ qrCode: qrCodeItem, stage: nextStage, operatorName });
       }
     } else if (acceptedQrs.length) {
+      // Final stage accepted: keep in same stage but update status.
       await QRCode.updateMany(
         { _id: { $in: acceptedQrs.map((q) => q._id) } },
-        { $set: { status: 'accepted' } }
+        { $set: { status: 'accepted', currentStage: stageNumber } }
       );
 
       for (const qrCodeItem of acceptedQrs) {
@@ -850,7 +870,10 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     // Apply rejected (stay in same stage)
     for (const qrCodeItem of rejectedQrs) {
-      await QRCode.updateOne({ _id: qrCodeItem._id }, { $set: { status: 'rejected', currentStage: stageNumber } });
+      await QRCode.updateOne(
+        { _id: qrCodeItem._id },
+        { $set: { status: 'rejected', currentStage: stageNumber } }
+      );
 
       const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
       processingStage.reviewStatus = 'rejected';
@@ -864,7 +887,10 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     // Apply rework (stay in same stage unless your product flow decides otherwise)
     for (const qrCodeItem of reworkQrs) {
-      await QRCode.updateOne({ _id: qrCodeItem._id }, { $set: { status: 'rework', currentStage: stageNumber } });
+      await QRCode.updateOne(
+        { _id: qrCodeItem._id },
+        { $set: { status: 'rework', currentStage: stageNumber } }
+      );
 
       const processingStage = await ensureProcessingStage({ qrCode: qrCodeItem, stage, operatorName });
       processingStage.reviewStatus = 'rework';
@@ -875,6 +901,45 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       processingStage.validated = true;
       await processingStage.save();
     }
+
+    // Safety net: ensure every QR we selected from the current qrsPool is updated,
+    // preventing employee portal from picking an old "latest" QR stuck in Stage 1.
+    // Safety net: ensure every QR we selected from the current qrsPool is updated.
+    // This prevents the employee portal from displaying a stale QR as the "latest" one (stuck on Stage 1).
+    const selectedQrIds = [...acceptedQrs, ...rejectedQrs, ...reworkQrs].map((q) => q._id);
+    if (selectedQrIds.length) {
+      await QRCode.updateMany(
+        { _id: { $in: selectedQrIds } },
+        {
+          $set: {
+            currentStage: nextStage ? nextStage.stageNumber : stageNumber
+          }
+        }
+      );
+
+      if (acceptedQrs.length && nextStage) {
+        await QRCode.updateMany(
+          { _id: { $in: acceptedQrs.map((q) => q._id) } },
+          { $set: { status: 'processing' } }
+        );
+      }
+
+      if (rejectedQrs.length) {
+        await QRCode.updateMany(
+          { _id: { $in: rejectedQrs.map((q) => q._id) } },
+          { $set: { status: 'rejected', currentStage: stageNumber } }
+        );
+      }
+
+      if (reworkQrs.length) {
+        await QRCode.updateMany(
+          { _id: { $in: reworkQrs.map((q) => q._id) } },
+          { $set: { status: 'rework', currentStage: stageNumber } }
+        );
+      }
+    }
+
+
 
     res.status(201).json({ message: 'Batch inspection submitted', response: responseDoc });
   } catch (error) {

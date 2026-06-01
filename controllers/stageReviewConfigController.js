@@ -116,6 +116,9 @@ exports.submitReview = async (req, res) => {
   }
 };
 
+// Stage review analytics should reflect the queue model (accepted items forwarded into later stages
+// should contribute as input/pending there). We already use getManufacturingStatsByPartNo from manufacturingStats.js,
+// so no change is required here.
 exports.getAnalytics = async (req, res) => {
   try {
     const { stageId } = req.params;

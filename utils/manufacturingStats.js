@@ -4,6 +4,32 @@ const ProductStage = require('../models/ProductStage');
 const { syncStageOneInputQuantity } = require('./processingStageInventory');
 
 const normalizePartNo = (partNo) => String(partNo || '').trim();
+
+// Stage-queue model:
+// Stage N "accepted" should represent items that were accepted in Stage N-1 and routed forward.
+// We approximate this by summing acceptedQuantity from ProcessingStage documents of stage (N-1).
+const getForwardedAcceptedForStage = async ({ partNo, stageNum }) => {
+  if (!Number.isFinite(stageNum) || stageNum <= 1) return 0;
+
+  const [row = {}] = await ProcessingStage.aggregate([
+    {
+      $match: {
+        partNo,
+        stageNumber: stageNum - 1,
+        $or: [{ qrId: { $exists: false } }, { qrId: null }]
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        acceptedFromPrev: { $sum: '$acceptedQuantity' }
+      }
+    }
+  ]);
+
+  return Number(row.acceptedFromPrev || 0);
+};
+
 const parseStageNumber = (stageNumber) => {
   const exact = Number(stageNumber);
   if (Number.isFinite(exact) && exact > 0) return exact;
@@ -119,6 +145,15 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
     const totalInput = Number(row.totalInput || 0);
     let idealProductCount = 0;
 
+    // If this is not the first stage, derive the stage queue using the previous stage accepted quantity.
+    // This fixes the case where Stage-1 accepted items should appear as "accepted" in Stage-2 stats.
+    let forwardedAccepted = 0;
+    if (stageNum > 1) {
+      const forwarded = await getForwardedAcceptedForStage({ partNo: normalizedPartNo, stageNum });
+      forwardedAccepted = forwarded;
+    }
+
+
     if (stageNum === 1 && totalInput === 0) {
       const { product, idealCount } = await getProductIdealInventory(normalizedPartNo);
       idealProductCount = idealCount;
@@ -126,12 +161,24 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
       if (product && idealCount > 0) {
         await syncStageOneInputQuantity(product);
       }
+    } else if (stageNum > 1 && totalInput === 0 && forwardedAccepted > 0) {
+      // If stage rows don't exist yet, but previous stage accepted exists,
+      // ensure stage queue shows correct totals.
+      idealProductCount = forwardedAccepted;
     }
 
+
     const totalItems = totalInput || idealProductCount;
+
+    // IMPORTANT:
+    // Stage N+1 "accepted" must ONLY represent items accepted AFTER Stage N+1 review.
+    // Forwarded accepted from previous stage contributes to total/input queue,
+    // but should not inflate accepted count for this stage until this stage is reviewed.
     const accepted = Number(row.accepted || 0);
     const rejected = Number(row.rejected || 0);
     const rework = Number(row.rework || 0);
+
+
 
     return {
       partNo: normalizedPartNo,
