@@ -1,7 +1,7 @@
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const ProcessingStage = require('../models/ProcessingStage');
 
-const normalizePartNo = (partNo) => String(partNo || '').trim().toUpperCase();
+const normalizecode = (code) => String(code || '').trim().toUpperCase();
 
 const getFirstStageForProduct = async (product) => {
   const config = await ManufacturingConfig.findOne({ productName: product.productName });
@@ -14,10 +14,10 @@ const getFirstStageForProduct = async (product) => {
 };
 
 const syncStageOneInputQuantity = async (product) => {
-  const partNo = normalizePartNo(product?.partNo || product?.productCode);
+  const code = normalizecode(product?.code || product?.code);
   const inputQuantity = Number(product?.numberOfItems || 0);
 
-  if (!partNo || !Number.isFinite(inputQuantity) || inputQuantity <= 0) {
+  if (!code || !Number.isFinite(inputQuantity) || inputQuantity <= 0) {
     return null;
   }
 
@@ -25,13 +25,13 @@ const syncStageOneInputQuantity = async (product) => {
 
   return ProcessingStage.findOneAndUpdate(
     {
-      partNo,
+      code,
       stageNumber: Number(firstStage.stageNumber || 1),
       qrId: { $exists: false }
     },
     {
       $set: {
-        partNo,
+        code,
         stageNumber: Number(firstStage.stageNumber || 1),
         stageName: firstStage.stageName || 'Manufacturing',
         inputQuantity,
@@ -52,3 +52,5 @@ const syncStageOneInputQuantity = async (product) => {
 module.exports = {
   syncStageOneInputQuantity
 };
+
+

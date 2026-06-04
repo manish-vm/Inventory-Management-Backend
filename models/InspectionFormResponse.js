@@ -15,7 +15,7 @@ const inspectionFormResponseSchema = new mongoose.Schema({
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   employeeName: { type: String, default: '' },
   productName: { type: String, default: '' },
-  partNo: { type: String, required: true, index: true },
+  code: { type: String, required: true, index: true },
   batchNo: { type: String, default: '' },
   partDescription: { type: String, default: '' },
   stageNumber: { type: Number, required: true },
@@ -48,8 +48,10 @@ const inspectionFormResponseSchema = new mongoose.Schema({
   submittedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-inspectionFormResponseSchema.index({ partNo: 1, submittedAt: -1 });
+inspectionFormResponseSchema.index({ code: 1, submittedAt: -1 });
 inspectionFormResponseSchema.index({ employee: 1, submittedAt: -1 });
 inspectionFormResponseSchema.index({ stageNumber: 1, inspectionResult: 1 });
 
 module.exports = mongoose.model('InspectionFormResponse', inspectionFormResponseSchema);
+
+

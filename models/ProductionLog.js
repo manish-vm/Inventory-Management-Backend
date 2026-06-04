@@ -6,7 +6,7 @@ const productionLogSchema = new mongoose.Schema({
     ref: 'QRCode',
     required: true
   },
-  partNo: { 
+  code: { 
     type: String, 
     required: true
   },
@@ -45,6 +45,7 @@ const productionLogSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 productionLogSchema.index({ qrId: 1 });
-productionLogSchema.index({ partNo: 1, createdAt: -1 });
+productionLogSchema.index({ code: 1, createdAt: -1 });
 
 module.exports = mongoose.model('ProductionLog', productionLogSchema);
+

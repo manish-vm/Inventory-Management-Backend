@@ -1,6 +1,6 @@
 const StageReviewConfig = require("../models/StageReviewConfig");
 const StageReviewSubmission = require("../models/StageReviewSubmission");
-const { getManufacturingStatsByPartNo } = require("../utils/manufacturingStats");
+const { getManufacturingStatsByCode } = require("../utils/manufacturingStats");
 
 const parseStageNumber = (stageId) => {
   // Accept stageId shapes like:
@@ -117,14 +117,14 @@ exports.submitReview = async (req, res) => {
 };
 
 // Stage review analytics should reflect the queue model (accepted items forwarded into later stages
-// should contribute as input/pending there). We already use getManufacturingStatsByPartNo from manufacturingStats.js,
+// should contribute as input/pending there). We already use getManufacturingStatsByCode from manufacturingStats.js,
 // so no change is required here.
 exports.getAnalytics = async (req, res) => {
   try {
     const { stageId } = req.params;
-    const { partNo } = req.query;
+    const { code } = req.query;
 
-    if (partNo) {
+    if (code) {
       const parsedStageNumber = parseStageNumber(stageId);
       if (!parsedStageNumber) {
         return res.status(400).json({
@@ -133,8 +133,8 @@ exports.getAnalytics = async (req, res) => {
         });
       }
 
-      const stats = await getManufacturingStatsByPartNo({
-        partNo,
+      const stats = await getManufacturingStatsByCode({
+        code,
         stageNumber: parsedStageNumber
       });
 
@@ -194,3 +194,6 @@ exports.getAnalytics = async (req, res) => {
     });
   }
 };
+
+
+

@@ -7,7 +7,7 @@ const inspectionScanLogSchema = new mongoose.Schema({
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   employeeName: { type: String, default: '' },
   productName: { type: String, default: '' },
-  partNo: { type: String, required: true, index: true },
+  code: { type: String, required: true, index: true },
   batchNo: { type: String, default: '' },
   partDescription: { type: String, default: '' },
   stageNumber: { type: Number, default: 1 },
@@ -23,7 +23,9 @@ const inspectionScanLogSchema = new mongoose.Schema({
   metadata: { type: Object, default: {} }
 }, { timestamps: true });
 
-inspectionScanLogSchema.index({ partNo: 1, updatedAt: -1 });
+inspectionScanLogSchema.index({ code: 1, updatedAt: -1 });
 inspectionScanLogSchema.index({ employee: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InspectionScanLog', inspectionScanLogSchema);
+
+

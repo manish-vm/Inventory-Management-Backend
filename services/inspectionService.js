@@ -10,10 +10,8 @@ const normalizeQuestions = (stage) => {
   return [];
 };
 
-const resolveProductContext = async (partNo) => {
-  const product = await Product.findOne({
-    $or: [{ partNo }, { productCode: partNo }]
-  });
+const resolveProductContext = async (code) => {
+  const product = await Product.findOne({ code });
 
   const config = product
     ? await ManufacturingConfig.findOne({ productName: product.productName })
@@ -84,7 +82,7 @@ const ensureProcessingStage = async ({ qrCode, stage, operatorName }) => {
   if (!processingStage) {
     processingStage = await ProcessingStage.create({
       qrId: qrCode._id,
-      partNo: qrCode.partNo,
+      code: qrCode.code,
       stageNumber: stage.stageNumber,
       stageName: stage.stageName,
       inputQuantity: qrCode.quantity || 1,
@@ -98,7 +96,7 @@ const ensureProcessingStage = async ({ qrCode, stage, operatorName }) => {
 };
 
 const buildProductPayload = async (qrCode) => {
-  const { product, config, stages } = await resolveProductContext(qrCode.partNo);
+  const { product, config, stages } = await resolveProductContext(qrCode.code);
   const currentStageNumber = qrCode.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
   const currentStage = getStageByNumber(stages, currentStageNumber);
   const latestStage = await getLatestProcessingStage(qrCode, currentStage.stageNumber);
@@ -114,9 +112,9 @@ const buildProductPayload = async (qrCode) => {
     productInfo: {
       id: qrCode._id,
       qrId: qrCode.qrId,
-      partNo: qrCode.partNo,
+      code: qrCode.code,
       partDescription: product?.description || product?.productName || '',
-      productName: product?.productName || qrCode.partNo,
+      productName: product?.productName || qrCode.code,
       currentStage: currentStage.stageName,
       currentStageNumber: currentStage.stageNumber,
       currentLocation: currentStage.stageName,
@@ -151,3 +149,5 @@ module.exports = {
   getItemStageStates,
   resolveProductContext
 };
+
+

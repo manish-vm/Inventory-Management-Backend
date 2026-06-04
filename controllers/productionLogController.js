@@ -3,7 +3,7 @@ const QRCode = require('../models/QRCode');
 
 exports.getAllProductionLogs = async (req, res) => {
   try {
-    const { search, partNo, status, stage } = req.query;
+    const { search, code, status, stage } = req.query;
     let query = {};
 
     if (search) {
@@ -12,12 +12,12 @@ exports.getAllProductionLogs = async (req, res) => {
       ];
     }
 
-    if (partNo) query.partNo = partNo;
+    if (code) query.code = code;
     if (status) query.status = status;
     if (stage) query.stage = parseInt(stage);
 
     const logs = await ProductionLog.find(query)
-      .populate('qrId', 'qrId partNo')
+      .populate('qrId', 'qrId code')
       .sort({ createdAt: -1 });
     
     res.json(logs);
@@ -29,7 +29,7 @@ exports.getAllProductionLogs = async (req, res) => {
 exports.getProductionLogById = async (req, res) => {
   try {
     const log = await ProductionLog.findById(req.params.id)
-      .populate('qrId', 'qrId partNo');
+      .populate('qrId', 'qrId code');
     
     if (!log) {
       return res.status(404).json({ message: 'Production log not found' });
@@ -42,11 +42,11 @@ exports.getProductionLogById = async (req, res) => {
 
 exports.createProductionLog = async (req, res) => {
   try {
-    const { qrId, partNo, quantity, stage, stageType, producedBy, operator, remarks } = req.body;
+    const { qrId, code, quantity, stage, stageType, producedBy, operator, remarks } = req.body;
 
     const log = new ProductionLog({
       qrId,
-      partNo,
+      code,
       quantity,
       stage: stage || 1,
       // ProductionLog.stageType enum: manufacturing/processing/assembly
@@ -128,7 +128,7 @@ exports.getProductionStats = async (req, res) => {
       },
       {
         $group: {
-          _id: '$partNo',
+          _id: '$code',
           totalQuantity: { $sum: '$quantity' },
           count: { $sum: 1 }
         }
@@ -194,3 +194,4 @@ exports.getDailyProduction = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+

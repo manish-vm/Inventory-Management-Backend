@@ -43,7 +43,7 @@ exports.checkout = async (req, res) => {
       stockUpdates.push({
         productId: product._id,
         productName: product.productName,
-        productCode: product.productCode,
+        code: product.code,
         quantity: item.quantity,
         sellingPrice: product.sellingPrice,
         total: itemTotal
@@ -98,7 +98,7 @@ exports.checkout = async (req, res) => {
               sender: req.user._id,
               type: 'low_stock',
               title: 'Low Stock Alert',
-              message: `${product.productName} (${product.productCode}) is running low. Current stock: ${product.stockQuantity}, Minimum: ${product.minStockLevel}`,
+              message: `${product.productName} (${product.code}) is running low. Current stock: ${product.stockQuantity}, Minimum: ${product.minStockLevel}`,
               relatedId: product._id,
               relatedModel: 'Product'
             }))
@@ -112,7 +112,7 @@ exports.checkout = async (req, res) => {
                 sender: req.user._id,
                 type: 'low_stock',
                 title: 'Low Stock Alert',
-                message: `${product.productName} (${product.productCode}) is running low. Current stock: ${product.stockQuantity}, Minimum: ${product.minStockLevel}`,
+                message: `${product.productName} (${product.code}) is running low. Current stock: ${product.stockQuantity}, Minimum: ${product.minStockLevel}`,
                 relatedId: product._id,
                 relatedModel: 'Product'
               }))
@@ -280,7 +280,7 @@ exports.downloadInvoicePDF = async (req, res) => {
     qrTableData += `--------------------\n`;
     
     invoice.items.forEach(item => {
-      const code = (item.productCode || '-').substring(0, 6).padEnd(6);
+      const code = (item.code || '-').substring(0, 6).padEnd(6);
       const qty = item.quantity.toString().padEnd(3);
       const price = formatCurrency(item.sellingPrice).padEnd(9);
       const total = formatCurrency(item.total);
@@ -397,7 +397,7 @@ exports.downloadInvoicePDF = async (req, res) => {
         doc.fillColor('#000000');
       }
       
-      doc.text(item.productCode || '-', itemCodeX, y);
+      doc.text(item.code || '-', itemCodeX, y);
       doc.text(item.productName || 'Unknown Product', itemNameX, y, { width: 170 });
       doc.text(item.quantity.toString(), qtyX, y, { width: 50, align: 'center' });
       doc.text(`₹${item.sellingPrice.toFixed(2)}`, priceX, y, { width: 70, align: 'right' });
@@ -451,4 +451,6 @@ exports.downloadInvoicePDF = async (req, res) => {
     res.status(500).json({ message: 'Failed to generate PDF' });
   }
 };
+
+
 

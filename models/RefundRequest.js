@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const refundItemSchema = new mongoose.Schema({
   productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
   productName: { type: String, required: true },
-  productCode: { type: String, required: true },
+  code: { type: String, required: true },
   quantity: { type: Number, required: true },
   sellingPrice: { type: Number, required: true },
   total: { type: Number, required: true }
@@ -30,4 +30,6 @@ const refundRequestSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model('RefundRequest', refundRequestSchema);
+
+
 

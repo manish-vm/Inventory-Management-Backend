@@ -1,10 +1,10 @@
 const ProcessingStage = require('../models/ProcessingStage');
 const QRCode = require('../models/QRCode');
-const { getManufacturingStatsByPartNo } = require('../utils/manufacturingStats');
+const { getManufacturingStatsByCode } = require('../utils/manufacturingStats');
 
 exports.getAllProcessingStages = async (req, res) => {
   try {
-    const { search, partNo, stageNumber, status, qrId } = req.query;
+    const { search, code, stageNumber, status, qrId } = req.query;
     let query = {};
 
     if (search) {
@@ -13,13 +13,13 @@ exports.getAllProcessingStages = async (req, res) => {
       ];
     }
 
-    if (partNo) query.partNo = partNo;
+    if (code) query.code = code;
     if (qrId) query.qrId = qrId;
     if (stageNumber) query.stageNumber = parseInt(stageNumber);
     if (status) query.status = status;
 
     const stages = await ProcessingStage.find(query)
-      .populate('qrId', 'qrId partNo')
+      .populate('qrId', 'qrId code')
       .sort({ createdAt: -1 });
     
     res.json(stages);
@@ -31,7 +31,7 @@ exports.getAllProcessingStages = async (req, res) => {
 exports.getProcessingStageById = async (req, res) => {
   try {
     const stage = await ProcessingStage.findById(req.params.id)
-      .populate('qrId', 'qrId partNo');
+      .populate('qrId', 'qrId code');
     
     if (!stage) {
       return res.status(404).json({ message: 'Processing stage not found' });
@@ -44,18 +44,18 @@ exports.getProcessingStageById = async (req, res) => {
 
 exports.createProcessingStage = async (req, res) => {
   try {
-    const { qrId, partNo, stageNumber, stageName, inputQuantity, operator } = req.body;
+    const { qrId, code, stageNumber, stageName, inputQuantity, operator } = req.body;
 
     const existingStage = qrId
       ? await ProcessingStage.findOne({ qrId, stageNumber })
-      : await ProcessingStage.findOne({ partNo, stageNumber, qrId: { $exists: false } });
+      : await ProcessingStage.findOne({ code, stageNumber, qrId: { $exists: false } });
     if (existingStage) {
       return res.status(400).json({ message: 'Processing stage already exists for this QR code' });
     }
 
     const stage = new ProcessingStage({
       qrId,
-      partNo,
+      code,
       stageNumber,
       stageName,
       inputQuantity,
@@ -158,10 +158,10 @@ exports.validateProcessingStage = async (req, res) => {
 exports.getStageReviewStats = async (req, res) => {
   try {
     const stageNumber = parseInt(req.params.stageNumber);
-    const { partNo } = req.query;
+    const { code } = req.query;
 
-    if (partNo) {
-      const stats = await getManufacturingStatsByPartNo({ partNo, stageNumber });
+    if (code) {
+      const stats = await getManufacturingStatsByCode({ code, stageNumber });
 
       // Backward compatible field names for existing frontend components
       return res.json({
@@ -206,7 +206,7 @@ exports.getStageReviewItems = async (req, res) => {
     const stageNumber = parseInt(req.params.stageNumber);
 
     const items = await ProcessingStage.find({ stageNumber })
-      .populate('qrId', 'qrId partNo')
+      .populate('qrId', 'qrId code')
       .sort({ updatedAt: -1 });
 
     res.json(items);
@@ -287,3 +287,6 @@ exports.getStageStats = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
+

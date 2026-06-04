@@ -77,12 +77,12 @@ exports.getManufacturingConfigById = async (req, res) => {
   }
 };
 
-exports.getManufacturingConfigByPartNo = async (req, res) => {
+exports.getManufacturingConfigByCode = async (req, res) => {
   try {
     const product = await Product.findOne({
       $or: [
-        { partNo: req.params.partNo },
-        { productCode: req.params.partNo }
+        { code: req.params.code },
+        { code: req.params.code }
       ]
     });
     if (!product) {
@@ -256,8 +256,10 @@ exports.validateStageSequence = async (req, res) => {
       return res.status(404).json({ message: 'QR Code not found' });
     }
 
-    // QRCode -> Product (by partNo) -> ManufacturingConfig (by productName)
-    const product = await Product.findOne({ partNo: qrCode.partNo });
+    // QRCode -> Product (by code) -> ManufacturingConfig (by productName)
+    const product = await Product.findOne({
+      $or: [{ code: qrCode.code }, { code: qrCode.code }]
+    });
     if (!product) {
       return res.status(404).json({ message: 'Product not found for QR code' });
     }
@@ -285,3 +287,6 @@ exports.validateStageSequence = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
+

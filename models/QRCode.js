@@ -7,7 +7,7 @@ const qrCodeSchema = new mongoose.Schema({
     unique: true,
     default: () => `QR-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`
   },
-  partNo: { 
+  code: { 
     type: String, 
     required: true,
     ref: 'Product'
@@ -53,6 +53,8 @@ const qrCodeSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 qrCodeSchema.index({ qrId: 1 });
-qrCodeSchema.index({ partNo: 1, status: 1 });
+qrCodeSchema.index({ code: 1, status: 1 });
 
 module.exports = mongoose.model('QRCode', qrCodeSchema);
+
+

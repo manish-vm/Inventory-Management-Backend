@@ -3,18 +3,18 @@ const Product = require('../models/Product');
 const ProductStage = require('../models/ProductStage');
 const { syncStageOneInputQuantity } = require('./processingStageInventory');
 
-const normalizePartNo = (partNo) => String(partNo || '').trim();
+const normalizecode = (code) => String(code || '').trim();
 
 // Stage-queue model:
 // Stage N "accepted" should represent items that were accepted in Stage N-1 and routed forward.
 // We approximate this by summing acceptedQuantity from ProcessingStage documents of stage (N-1).
-const getForwardedAcceptedForStage = async ({ partNo, stageNum }) => {
+const getForwardedAcceptedForStage = async ({ code, stageNum }) => {
   if (!Number.isFinite(stageNum) || stageNum <= 1) return 0;
 
   const [row = {}] = await ProcessingStage.aggregate([
     {
       $match: {
-        partNo,
+        code,
         stageNumber: stageNum - 1,
         $or: [{ qrId: { $exists: false } }, { qrId: null }]
       }
@@ -39,17 +39,17 @@ const parseStageNumber = (stageNumber) => {
   return Number.isFinite(suffix) && suffix > 0 ? suffix : null;
 };
 
-const getProductIdealInventory = async (partNo) => {
-  const normalizedPartNo = normalizePartNo(partNo);
-  const upperPartNo = normalizedPartNo.toUpperCase();
+const getProductIdealInventory = async (code) => {
+  const normalizedcode = normalizecode(code);
+  const uppercode = normalizedcode.toUpperCase();
 
   const product = await Product.findOne({
     $or: [
-      { partNo: normalizedPartNo },
-      { partNo: upperPartNo },
-      { productCode: normalizedPartNo },
-      { productCode: upperPartNo },
-      { productName: normalizedPartNo }
+      { code: normalizedcode },
+      { code: uppercode },
+      { code: normalizedcode },
+      { code: uppercode },
+      { productName: normalizedcode }
     ]
   }).lean();
 
@@ -65,12 +65,12 @@ const getProductIdealInventory = async (partNo) => {
  * Use ONLY ProcessingStage quantities. Product creation syncs Product.numberOfItems
  * into stage 1 inputQuantity, so analytics never depend on QR generation.
  */
-const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
-  const normalizedPartNo = normalizePartNo(partNo);
+const getManufacturingStatsByCode = async ({ code, stageNumber }) => {
+  const normalizedcode = normalizecode(code);
 
-  if (!normalizedPartNo) {
+  if (!normalizedcode) {
     return {
-      partNo: '',
+      code: '',
       stageNumber: stageNumber ? Number(stageNumber) : null,
       totalItems: 0,
       accepted: 0,
@@ -90,7 +90,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
     const [productStageRow = {}] = await ProductStage.aggregate([
       {
         $match: {
-          partNo: normalizedPartNo,
+          code: normalizedcode,
           stageNumber: stageNum
         }
       },
@@ -112,7 +112,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
       const rework = Number(productStageRow.rework || 0);
 
       return {
-        partNo: normalizedPartNo,
+        code: normalizedcode,
         stageNumber: stageNum,
         totalItems,
         inputQuantity: totalItems,
@@ -126,7 +126,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
     const [row = {}] = await ProcessingStage.aggregate([
       {
         $match: {
-          partNo: normalizedPartNo,
+          code: normalizedcode,
           stageNumber: stageNum,
           $or: [{ qrId: { $exists: false } }, { qrId: null }]
         }
@@ -149,13 +149,13 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
     // This fixes the case where Stage-1 accepted items should appear as "accepted" in Stage-2 stats.
     let forwardedAccepted = 0;
     if (stageNum > 1) {
-      const forwarded = await getForwardedAcceptedForStage({ partNo: normalizedPartNo, stageNum });
+      const forwarded = await getForwardedAcceptedForStage({ code: normalizedcode, stageNum });
       forwardedAccepted = forwarded;
     }
 
 
     if (stageNum === 1 && totalInput === 0) {
-      const { product, idealCount } = await getProductIdealInventory(normalizedPartNo);
+      const { product, idealCount } = await getProductIdealInventory(normalizedcode);
       idealProductCount = idealCount;
 
       if (product && idealCount > 0) {
@@ -181,7 +181,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
 
 
     return {
-      partNo: normalizedPartNo,
+      code: normalizedcode,
       stageNumber: stageNum,
       totalItems,
       inputQuantity: totalItems,
@@ -198,7 +198,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
   // We aggregate ONLY from ProcessingStage.inputQuantity/counters.
   const [totals] = await ProcessingStage.aggregate([
     {
-      $match: { partNo: normalizedPartNo }
+      $match: { code: normalizedcode }
     },
     {
       $group: {
@@ -219,7 +219,7 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
   const pending = Math.max(totalItems - (accepted + rejected + rework), 0);
 
   return {
-    partNo: normalizedPartNo,
+    code: normalizedcode,
     stageNumber: null,
     totalItems,
     inputQuantity: totalItems,
@@ -231,5 +231,8 @@ const getManufacturingStatsByPartNo = async ({ partNo, stageNumber }) => {
 };
 
 module.exports = {
-  getManufacturingStatsByPartNo
+  getManufacturingStatsByCode
 };
+
+
+

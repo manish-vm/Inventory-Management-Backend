@@ -14,7 +14,7 @@ const assemblySchema = new mongoose.Schema({
   },
   components: [{
     qrId: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode' },
-    partNo: String,
+    code: String,
     quantityUsed: { type: Number, default: 1 },
     stage: Number
   }],
@@ -47,3 +47,4 @@ assemblySchema.index({ assemblyNo: 1 });
 assemblySchema.index({ status: 1 });
 
 module.exports = mongoose.model('Assembly', assemblySchema);
+

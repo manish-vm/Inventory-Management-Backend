@@ -1,6 +1,8 @@
 const Product = require('../models/Product');
 const { syncStageOneInputQuantity } = require('../utils/processingStageInventory');
 
+const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+
 exports.getAllProductMasters = async (req, res) => {
   try {
     const { search, type, subType, isActive } = req.query;
@@ -8,7 +10,7 @@ exports.getAllProductMasters = async (req, res) => {
 
     if (search) {
       query.$or = [
-        { partNo: { $regex: search, $options: 'i' } },
+        { code: { $regex: search, $options: 'i' } },
         { productName: { $regex: search, $options: 'i' } }
       ];
     }
@@ -36,9 +38,10 @@ exports.getProductMasterById = async (req, res) => {
   }
 };
 
-exports.getProductMasterByPartNo = async (req, res) => {
+exports.getProductMasterByCode = async (req, res) => {
   try {
-    const product = await Product.findOne({ partNo: req.params.partNo });
+    const code = normalizeCode(req.params.code);
+    const product = await Product.findOne({ code });
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -50,15 +53,18 @@ exports.getProductMasterByPartNo = async (req, res) => {
 
 exports.createProductMaster = async (req, res) => {
   try {
-    const { partNo, description, productName, type, subType, unitWeight, unit, numberOfItems } = req.body;
+    const { code, description, productName, type, subType, unitWeight, unit, numberOfItems } = req.body;
+    const resolvedCode = normalizeCode(code);
 
-    const existingProduct = await Product.findOne({ partNo: partNo?.toUpperCase() });
+    const existingProduct = await Product.findOne({
+      code: resolvedCode
+    });
     if (existingProduct) {
-      return res.status(400).json({ message: 'Part No already exists' });
+      return res.status(400).json({ message: 'Code already exists' });
     }
 
     const product = new Product({
-      partNo: partNo?.toUpperCase(),
+      code: resolvedCode,
       productName: productName || description || 'Untitled',
       description,
       type,
@@ -84,14 +90,19 @@ exports.updateProductMaster = async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    const { partNo, description, productName, type, subType, unitWeight, unit, numberOfItems, isActive } = req.body;
+    const { code, description, productName, type, subType, unitWeight, unit, numberOfItems, isActive } = req.body;
 
-    if (partNo && partNo !== product.partNo) {
-      const existing = await Product.findOne({ partNo: partNo?.toUpperCase() });
+    const resolvedCode = normalizeCode(code);
+
+    if (resolvedCode && resolvedCode !== product.code) {
+      const existing = await Product.findOne({
+        _id: { $ne: product._id },
+        code: resolvedCode
+      });
       if (existing) {
-        return res.status(400).json({ message: 'Part No already exists' });
+        return res.status(400).json({ message: 'Code already exists' });
       }
-      product.partNo = partNo.toUpperCase();
+      product.code = resolvedCode;
     }
 
     if (productName !== undefined) product.productName = productName;
@@ -143,7 +154,8 @@ exports.uploadProductMasters = async (req, res) => {
 
     for (const item of products) {
       try {
-        const existing = await Product.findOne({ partNo: item.partNo?.toUpperCase() });
+        const code = normalizeCode(item.code);
+        const existing = await Product.findOne({ code });
         
         if (existing) {
           existing.productName = item.productName || item.description || existing.productName;
@@ -154,7 +166,7 @@ exports.uploadProductMasters = async (req, res) => {
           results.updated++;
         } else {
           const product = new Product({
-            partNo: item.partNo?.toUpperCase(),
+            code,
             productName: item.productName || item.description || 'Untitled',
             description: item.description,
             type: item.type,
@@ -164,7 +176,7 @@ exports.uploadProductMasters = async (req, res) => {
           results.created++;
         }
       } catch (err) {
-        results.errors.push({ partNo: item.partNo, error: err.message });
+        results.errors.push({ code: item.code, error: err.message });
       }
     }
 
@@ -195,3 +207,6 @@ exports.getProductSubTypes = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
+

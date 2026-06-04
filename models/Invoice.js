@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const invoiceItemSchema = new mongoose.Schema({
   productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
   productName: { type: String, required: true },
-  productCode: { type: String, required: true },
+  code: { type: String, required: true },
   quantity: { type: Number, required: true },
   sellingPrice: { type: Number, required: true },
   total: { type: Number, required: true }
@@ -45,4 +45,6 @@ invoiceSchema.pre('save', async function(next) {
 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);
+
+
 

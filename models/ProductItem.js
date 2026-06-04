@@ -10,15 +10,15 @@ const productItemSchema = new mongoose.Schema(
       index: true
     },
 
-    // Root product part number, e.g. MTR001
-    rootPartNo: {
+    // Root Code, e.g. MTR001
+    rootCode: {
       type: String,
       required: true,
       index: true
     },
 
-    // Item-level part number, e.g. MTR001001
-    partNo: {
+    // Item-level code, e.g. MTR001001
+    code: {
       type: String,
       required: true,
       unique: true,
@@ -42,7 +42,9 @@ const productItemSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-productItemSchema.index({ rootPartNo: 1, itemNumber: 1 }, { unique: true });
+productItemSchema.index({ rootCode: 1, itemNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('ProductItem', productItemSchema);
+
+
 

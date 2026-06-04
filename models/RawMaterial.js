@@ -6,7 +6,7 @@ const rawMaterialSchema = new mongoose.Schema({
     ref: 'QRCode',
     required: true
   },
-  partNo: { 
+  code: { 
     type: String, 
     required: true
   },
@@ -57,3 +57,4 @@ rawMaterialSchema.index({ qrId: 1 });
 rawMaterialSchema.index({ batchNo: 1 });
 
 module.exports = mongoose.model('RawMaterial', rawMaterialSchema);
+

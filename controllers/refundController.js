@@ -50,7 +50,7 @@ exports.createRefundRequest = async (req, res) => {
       items: invoice.items.map(item => ({
         productId: item.productId,
         productName: item.productName,
-        productCode: item.productCode,
+        code: item.code,
         quantity: item.quantity,
         sellingPrice: item.sellingPrice,
         total: item.total
@@ -241,4 +241,6 @@ exports.getPendingCount = async (req, res) => {
     res.status(500).json({ message: error.message || 'Failed to fetch pending count' });
   }
 };
+
+
 

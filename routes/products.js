@@ -8,7 +8,7 @@ const productsController = require('../controllers/productsController');
 router.get('/', auth, authAndEmployee, productsController.getProducts);
 
 // @route   GET /api/products/code/:code
-// @desc    Get product by barcode/productCode
+// @desc    Get product by barcode/code
 router.get('/code/:code', auth, authAndEmployee, productsController.getProductByCode);
 
 // @route   GET /api/products/low-stock/all
@@ -74,4 +74,6 @@ router.delete('/subcategories/:id', auth, adminOnly, productsController.deleteSu
 router.get('/:id/analytics', auth, authAndEmployee, productsController.getProductAnalytics);
 
 module.exports = router;
+
+
 

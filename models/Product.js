@@ -2,9 +2,8 @@ const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
   productName: { type: String, required: true },
-  partNo: { type: String, unique: true, sparse: true, trim: true },
+  code: { type: String, unique: true, sparse: true, trim: true },
   description: { type: String },
-  productCode: { type: String, unique: true }, // Used for Barcode - auto-generated if not provided
 
   // Only the fields required by your product concept
   brandName: { type: String },
@@ -32,11 +31,13 @@ const productSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 
-// Auto-generate unique productCode (barcode) before saving
-// Uses timestamp + random string to ensure uniqueness even after deletion
+const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+
+// Auto-generate unique Code before saving.
 productSchema.pre('save', async function(next) {
-  if (!this.productCode) {
-    // Generate unique barcode: PRD- + timestamp + random 6 chars
+  this.code = normalizeCode(this.code);
+
+  if (!this.code) {
     let isUnique = false;
     let newCode = '';
     
@@ -46,16 +47,18 @@ productSchema.pre('save', async function(next) {
       newCode = `PRD-${timestamp}-${randomChars}`;
       
       // Check if this code exists in any product (including deleted ones)
-      const existing = await this.constructor.findOne({ productCode: newCode });
+      const existing = await this.constructor.findOne({ code: newCode });
       if (!existing) {
         isUnique = true;
       }
     }
     
-    this.productCode = newCode;
+    this.code = newCode;
   }
   next();
 });
 
 module.exports = mongoose.model('Product', productSchema);
+
+
 

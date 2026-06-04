@@ -7,13 +7,11 @@ const Product = require('../models/Product');
 router.get('/stage/:stageId', auth, async (req, res) => {
   try {
     const stageId = Number(req.params.stageId);
-    const { partNo, productName } = req.query;
+    const { code, productName } = req.query;
 
     let resolvedProductName = productName;
-    if (!resolvedProductName && partNo) {
-      const product = await Product.findOne({
-        $or: [{ partNo }, { productCode: partNo }]
-      });
+    if (!resolvedProductName && code) {
+      const product = await Product.findOne({ code });
       resolvedProductName = product?.productName;
     }
 
@@ -53,3 +51,5 @@ router.get('/stage/:stageId', auth, async (req, res) => {
 });
 
 module.exports = router;
+
+

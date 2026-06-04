@@ -4,7 +4,7 @@ const stageMovementLogSchema = new mongoose.Schema({
   qrCode: { type: mongoose.Schema.Types.ObjectId, ref: 'QRCode', required: true },
   qrId: { type: String, required: true },
   itemId: { type: String, default: '' },
-  partNo: { type: String, required: true, index: true },
+  code: { type: String, required: true, index: true },
   batchNo: { type: String, default: '' },
   productName: { type: String, default: '' },
   employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -22,7 +22,9 @@ const stageMovementLogSchema = new mongoose.Schema({
   movedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-stageMovementLogSchema.index({ partNo: 1, movedAt: -1 });
+stageMovementLogSchema.index({ code: 1, movedAt: -1 });
 stageMovementLogSchema.index({ qrCode: 1, movedAt: -1 });
 
 module.exports = mongoose.model('StageMovementLog', stageMovementLogSchema);
+
+

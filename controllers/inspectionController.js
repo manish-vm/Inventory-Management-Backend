@@ -4,6 +4,7 @@ const QRCode = require('../models/QRCode');
 const Product = require('../models/Product');
 const StageMovementLog = require('../models/StageMovementLog');
 const ProcessingStage = require('../models/ProcessingStage');
+const ProductStage = require('../models/ProductStage');
 const mongoose = require('mongoose');
 const {
   buildProductPayload,
@@ -92,28 +93,63 @@ const canEmployeeProcessStage = (employee, stageNumber) => {
   return assignedStageNumbers.includes(Number(stageNumber));
 };
 
-const getCurrentQrForPartNos = async (partNos = []) => {
-  const normalizedPartNos = partNos.filter(Boolean);
-  if (!normalizedPartNos.length) return null;
+const getCurrentQrForCodes = async (codes = []) => {
+  const normalizedCodes = codes.filter(Boolean);
+  if (!normalizedCodes.length) return null;
 
-  return QRCode.findOne({ partNo: { $in: normalizedPartNos } })
+  return QRCode.findOne({ code: { $in: normalizedCodes } })
     .sort({ currentStage: -1, updatedAt: -1 })
     .lean();
 };
 
-const buildEmployeeStageRows = async ({ partNos = [], stages = [], employee }) => {
-  const normalizedPartNos = partNos.filter(Boolean);
+const getAvailableCountForStage = async (codes = [], stageNumber) => {
+  const normalizedCodes = codes.filter(Boolean);
+  const normalizedStageNumber = Number(stageNumber);
+  if (!normalizedCodes.length || !Number.isFinite(normalizedStageNumber)) return 0;
+
+  const qrCount = await QRCode.countDocuments({
+    code: { $in: normalizedCodes },
+    currentStage: normalizedStageNumber
+  });
+  if (qrCount > 0) return qrCount;
+
+  const productStages = await ProductStage.find({
+    code: { $in: normalizedCodes },
+    stageNumber: normalizedStageNumber
+  }).lean();
+
+  const productStageCount = productStages.reduce((sum, row) => {
+    const pending = Number(row.pendingCount);
+    if (Number.isFinite(pending) && pending > 0) return sum + pending;
+    const available = Number(row.availableQuantity || 0);
+    const processed = Number(row.acceptedCount || 0) + Number(row.rejectedCount || 0) + Number(row.reworkCount || 0);
+    return sum + Math.max(available - processed, 0);
+  }, 0);
+  if (productStageCount > 0) return productStageCount;
+
+  const processingStages = await ProcessingStage.find({
+    code: { $in: normalizedCodes },
+    stageNumber: normalizedStageNumber,
+    $or: [{ qrId: { $exists: false } }, { qrId: null }]
+  }).lean();
+
+  return processingStages.reduce((sum, row) => {
+    const input = Number(row.inputQuantity || 0);
+    const processed = Number(row.acceptedQuantity || 0) + Number(row.rejectedQuantity || 0) + Number(row.reworkQuantity || 0);
+    return sum + Math.max(input - processed, 0);
+  }, 0);
+};
+
+const buildEmployeeStageRows = async ({ codes = [], stages = [], employee }) => {
+  const normalizedCodes = codes.filter(Boolean);
   return Promise.all(
     stages.map(async (stage) => ({
       stageNumber: stage.stageNumber,
       stageName: stage.stageName,
       stageType: stage.stageType,
       selectable: canEmployeeProcessStage(employee, stage.stageNumber),
-      availableCount: normalizedPartNos.length
-        ? await QRCode.countDocuments({
-            partNo: { $in: normalizedPartNos },
-            currentStage: Number(stage.stageNumber)
-          })
+      availableCount: normalizedCodes.length
+        ? await getAvailableCountForStage(normalizedCodes, stage.stageNumber)
         : 0
     }))
   );
@@ -153,7 +189,7 @@ exports.scanQRCode = async (req, res) => {
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
       productName: payload.productInfo.productName,
-      partNo: qrCode.partNo,
+      code: qrCode.code,
       partDescription: payload.productInfo.partDescription,
       stageNumber: payload.currentStage.stageNumber,
       stageName: payload.currentStage.stageName,
@@ -173,12 +209,12 @@ exports.scanQRCode = async (req, res) => {
 
 exports.getProductForEmployee = async (req, res) => {
   try {
-    const { partNo } = req.params;
+    const { code } = req.params;
     const qrCode = await QRCode.findOne({
       $or: [
-        { qrId: partNo },
-        { partNo },
-        { batchNo: partNo }
+        { qrId: code },
+        { code },
+        { batchNo: code }
       ]
     }).sort({ updatedAt: -1 });
 
@@ -197,7 +233,7 @@ exports.getProductForEmployee = async (req, res) => {
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
       productName: payload.productInfo.productName,
-      partNo: qrCode.partNo,
+      code: qrCode.code,
       batchNo: qrCode.batchNo,
       itemId: qrCode.qrId,
       partDescription: payload.productInfo.partDescription,
@@ -214,7 +250,7 @@ exports.getProductForEmployee = async (req, res) => {
         ...payload.productInfo,
         batchNo: qrCode.batchNo || '',
         itemId: qrCode.qrId,
-        totalIdealItems: await QRCode.countDocuments({ partNo: qrCode.partNo }),
+        totalIdealItems: await QRCode.countDocuments({ code: qrCode.code }),
         createdDate: qrCode.createdAt,
         nextStage: payload.stages.find((stage) => Number(stage.stageNumber) === Number(payload.currentStage.stageNumber) + 1)?.stageName || 'Final Stage'
       },
@@ -252,8 +288,7 @@ exports.searchProductsForEmployee = async (req, res) => {
         ? {
             $or: [
               { productName: { $regex: term, $options: 'i' } },
-              { partNo: { $regex: term, $options: 'i' } },
-              { productCode: { $regex: term, $options: 'i' } }
+              { code: { $regex: term, $options: 'i' } }
             ]
           }
         : {}
@@ -262,7 +297,7 @@ exports.searchProductsForEmployee = async (req, res) => {
       .lean();
 
     // Requirement: employee portal dropdown/list should show each product ONCE (union by productName),
-    // even if multiple QR codes exist for the same partNo/productName.
+    // even if multiple QR codes exist for the same code/productName.
     // We therefore always collapse to a single row per productName when term matches productName.
     const matchedByProductName = term
       ? productRows.filter((p) => String(p.productName || '').toLowerCase().includes(term.toLowerCase()))
@@ -273,31 +308,53 @@ exports.searchProductsForEmployee = async (req, res) => {
 
       const rows = [];
       for (const productName of uniqueProductNames) {
-        const productPartNos = matchedByProductName
+        const codes = matchedByProductName
           .filter((p) => p.productName === productName)
-          .map((p) => p.partNo)
+          .map((p) => p.code)
           .filter(Boolean);
 
-        const availableCount = productPartNos.length
-          ? await QRCode.countDocuments({ partNo: { $in: productPartNos }, ...stageMatch })
-          : 0;
-
-        const latestQrRows = productPartNos.length
-          ? await QRCode.find({ partNo: { $in: productPartNos }, ...stageMatch }).sort({ updatedAt: -1 }).limit(1).lean()
+        const latestQrRows = codes.length
+          ? await QRCode.find({ code: { $in: codes }, ...stageMatch }).sort({ updatedAt: -1 }).limit(1).lean()
           : null;
 
         const latestQr = latestQrRows?.[0];
-        if (!latestQr) continue;
+        const { stages } = await resolveProductContext(codes[0]);
+        const stageCounts = await Promise.all(
+          (stages || []).map(async (stage) => ({
+            stageNumber: Number(stage.stageNumber),
+            count: await getAvailableCountForStage(codes, stage.stageNumber)
+          }))
+        );
+        const availableCount = assignedStageNumbers.length
+          ? stageCounts
+              .filter((item) => assignedStageNumbers.includes(item.stageNumber))
+              .reduce((sum, item) => sum + item.count, 0)
+          : stageCounts.reduce((sum, item) => sum + item.count, 0);
+        const firstAvailableStage = stageCounts.find((item) => item.count > 0);
 
         rows.push({
           productId: matchedByProductName.find((p) => p.productName === productName)?._id || null,
           productName,
-          partNo: '',
+          code: codes[0] || '',
           batchNo: '',
           availableCount,
-          currentStage: latestQr.currentStage || 1
+          currentStage: latestQr?.currentStage || firstAvailableStage?.stageNumber || stages?.[0]?.stageNumber || 1
         });
       }
+
+      const normalizedTerm = term.toLowerCase();
+      rows.sort((a, b) => {
+        const aName = String(a.productName || '').toLowerCase();
+        const bName = String(b.productName || '').toLowerCase();
+        const aCode = String(a.code || '').toLowerCase();
+        const bCode = String(b.code || '').toLowerCase();
+        const score = (name, code) => {
+          if (name === normalizedTerm || code === normalizedTerm) return 0;
+          if (name.startsWith(normalizedTerm) || code.startsWith(normalizedTerm)) return 1;
+          return 2;
+        };
+        return score(aName, aCode) - score(bName, bCode) || aName.localeCompare(bName);
+      });
 
       return res.json(rows.slice(0, 20));
     }
@@ -322,38 +379,36 @@ exports.getBatchProductForEmployee = async (req, res) => {
             $options: 'i'
           }
         },
-        { partNo: key },
-        { productCode: key }
+        { code: key }
       ]
     });
 
     // If matched by productName, compute total QR count under that product name.
     if (productMatch?.productName) {
-      const matchedProducts = await Product.find({ productName: productMatch.productName }).select('partNo productCode').lean();
-      const partNos = matchedProducts.map((p) => p.partNo || p.productCode).filter(Boolean);
+      const matchedProducts = await Product.find({ productName: productMatch.productName }).select('code').lean();
+      const codes = matchedProducts.map((p) => p.code).filter(Boolean);
 
-      const currentQr = await getCurrentQrForPartNos(partNos);
+      const currentQr = await getCurrentQrForCodes(codes);
 
-      if (!currentQr) {
-        return res.status(404).json({ message: 'Product item not found' });
-      }
-
-      const { config, stages } = await resolveProductContext(currentQr.partNo);
-      const currentStageNumber = currentQr?.currentStage > 0 ? currentQr.currentStage : stages[0]?.stageNumber || 1;
+      const primaryCode = currentQr?.code || codes[0] || productMatch.code;
+      const { config, stages } = await resolveProductContext(primaryCode);
+      const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user });
+      const firstAvailableStage = stageRows.find((stage) => Number(stage.availableCount || 0) > 0);
+      const currentStageNumber = currentQr?.currentStage > 0
+        ? currentQr.currentStage
+        : firstAvailableStage?.stageNumber || stages[0]?.stageNumber || 1;
       const currentStage = getStageByNumber(stages, currentStageNumber);
 
-      const availableCount = partNos.length
-        ? await QRCode.countDocuments({ partNo: { $in: partNos }, currentStage: currentStageNumber })
-        : 0;
+      const availableCount = await getAvailableCountForStage(codes, currentStageNumber);
 
       await InspectionScanLog.create({
         qrCode: currentQr?._id,
-        qrId: currentQr?.qrId || productMatch.partNo || productMatch.productCode || productMatch.productName,
+        qrId: currentQr?.qrId || primaryCode || productMatch.productName,
         itemId: currentQr?.qrId || '',
         employee: req.user._id,
         employeeName: getEmployeeName(req.user),
         productName: productMatch.productName,
-        partNo: productMatch.partNo || productMatch.productCode || currentQr.partNo,
+        code: primaryCode,
         batchNo: '',
         partDescription: productMatch.description || productMatch.productName || '',
         stageNumber: currentStage.stageNumber,
@@ -367,7 +422,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
         product: {
           productId: productMatch._id,
           productName: productMatch.productName,
-          partNo: productMatch.partNo || productMatch.productCode || currentQr.partNo,
+          code: primaryCode,
           batchNo: '',
           partDescription: productMatch.description || productMatch.productName || '',
           availableCount,
@@ -375,7 +430,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
           currentStageNumber
         },
         stage: currentStage,
-        stages: await buildEmployeeStageRows({ partNos, stages, employee: req.user }),
+        stages: stageRows,
         forms: (() => {
           const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
           return questions.length
@@ -395,23 +450,23 @@ exports.getBatchProductForEmployee = async (req, res) => {
       return;
     }
 
-    // Fallback: key matched by partNo/productCode/batch.
+    // Fallback: key matched by code/batch.
     const qrCode = await QRCode.findOne({
       $or: [
-        { partNo: key },
+        { code: key },
         { batchNo: key },
-        ...(productMatch?.partNo || productMatch?.productCode ? [{ partNo: productMatch.partNo || productMatch.productCode }] : [])
+        ...(productMatch?.code ? [{ code: productMatch.code }] : [])
       ]
     }).sort({ updatedAt: -1 });
 
     if (!qrCode && !productMatch) return res.status(404).json({ message: 'Product not found' });
 
-    const partNo = qrCode?.partNo || productMatch.partNo || productMatch.productCode;
-    const { product, config, stages } = await resolveProductContext(partNo);
+    const code = qrCode?.code || productMatch.code;
+    const { product, config, stages } = await resolveProductContext(code);
     const resolvedProduct = product || productMatch;
     const currentStageNumber = qrCode?.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
-    const availableCount = await QRCode.countDocuments({ partNo, currentStage: currentStageNumber }) ||
+    const availableCount = await getAvailableCountForStage([code], currentStageNumber) ||
       qrCode?.quantity ||
       resolvedProduct?.quantity ||
       resolvedProduct?.stock ||
@@ -419,12 +474,12 @@ exports.getBatchProductForEmployee = async (req, res) => {
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
-      qrId: qrCode?.qrId || partNo,
+      qrId: qrCode?.qrId || code,
       itemId: qrCode?.qrId || '',
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
-      productName: resolvedProduct?.productName || partNo,
-      partNo,
+      productName: resolvedProduct?.productName || code,
+      code,
       batchNo: qrCode?.batchNo || '',
       partDescription: resolvedProduct?.description || resolvedProduct?.productName || '',
       stageNumber: currentStage.stageNumber,
@@ -437,8 +492,8 @@ exports.getBatchProductForEmployee = async (req, res) => {
     res.json({
       product: {
         productId: resolvedProduct?._id || qrCode?._id,
-        productName: resolvedProduct?.productName || partNo,
-        partNo,
+        productName: resolvedProduct?.productName || code,
+        code,
         batchNo: qrCode?.batchNo || '',
         partDescription: resolvedProduct?.description || resolvedProduct?.productName || '',
         availableCount,
@@ -446,7 +501,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
         currentStageNumber
       },
       stage: currentStage,
-      stages: await buildEmployeeStageRows({ partNos: [partNo], stages, employee: req.user }),
+      stages: await buildEmployeeStageRows({ codes: [code], stages, employee: req.user }),
       forms: (() => {
         const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
         return questions.length
@@ -472,7 +527,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
   try {
     const {
       productId = '',
-      partNo,
+      code,
       batchNo = '',
       productName = '',
       stageId,
@@ -486,7 +541,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       remarks = ''
     } = req.body;
 
-    if (!partNo) return res.status(400).json({ message: 'partNo is required' });
+    if (!code) return res.status(400).json({ message: 'code is required' });
     const stageNumber = Number(stageId);
     if (!Number.isFinite(stageNumber)) return res.status(400).json({ message: 'stageId is required' });
     if (!canEmployeeProcessStage(req.user, stageNumber)) {
@@ -586,15 +641,16 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       derivedRejectedByQuestion: derivedRejected.perQuestion,
       derivedReworkByQuestion: derivedRework.perQuestion
     });
-    const qrCode = await QRCode.findOne({ partNo, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
-    const availableCount = qrCode?.quantity || await QRCode.countDocuments({ partNo, ...(batchNo ? { batchNo } : {}) });
+    const qrCode = await QRCode.findOne({ code, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
+    const qrAvailableCount = qrCode?.quantity || await QRCode.countDocuments({ code, ...(batchNo ? { batchNo } : {}), currentStage: stageNumber });
+    const availableCount = qrAvailableCount || await getAvailableCountForStage([code], stageNumber);
     if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
     if (total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
     if ((counts.rejected > 0 || counts.rework > 0) && !String(remarks).trim()) {
       return res.status(400).json({ message: 'Remarks are required when rejected or rework items are present' });
     }
 
-    const { product, stages } = await resolveProductContext(partNo);
+    const { product, stages } = await resolveProductContext(code);
     const stage = getStageByNumber(stages, stageNumber);
 
     // Update ProductStage counters based on submitted counts.
@@ -610,14 +666,14 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const productStage = await ProductStage.findOneAndUpdate(
       {
         productId: resolvedProductId,
-        partNo,
+        code,
         stageNumber
       },
       {
         $setOnInsert: {
           productId: resolvedProductId,
 
-          partNo,
+          code,
           stageNumber,
           stageName: stage?.stageName || `Stage ${stageNumber}`,
           availableQuantity: availableCount,
@@ -652,13 +708,13 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     await ProcessingStage.findOneAndUpdate(
       {
-        partNo,
+        code,
         stageNumber,
         $or: [{ qrId: { $exists: false } }, { qrId: null }]
       },
       {
         $set: {
-          partNo,
+          code,
           stageNumber,
           stageName: stage?.stageName || `Stage ${stageNumber}`,
           inputQuantity: Number(productStage.availableQuantity || availableCount || total || 0),
@@ -677,12 +733,12 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
-      qrId: qrCode?.qrId || `${partNo}-${batchNo || 'batch'}`,
+      qrId: qrCode?.qrId || `${code}-${batchNo || 'batch'}`,
       itemId: qrCode?.qrId || '',
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
-      productName: productName || product?.productName || partNo,
-      partNo,
+      productName: productName || product?.productName || code,
+      code,
       batchNo,
       partDescription: product?.description || product?.productName || '',
       stageNumber,
@@ -703,12 +759,12 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       qrCode: qrCode?._id,
       productId: resolvedProductId,
 
-      qrId: qrCode?.qrId || `${partNo}-${batchNo || 'batch'}`,
+      qrId: qrCode?.qrId || `${code}-${batchNo || 'batch'}`,
       itemId: '',
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
-      productName: productName || product?.productName || partNo,
-      partNo,
+      productName: productName || product?.productName || code,
+      code,
       batchNo,
       partDescription: product?.description || product?.productName || '',
       stageNumber,
@@ -739,7 +795,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const nextStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] : null;
 
     const qrsPool = await QRCode.find({
-      partNo,
+      code,
       ...(batchNo ? { batchNo } : {}),
       currentStage: stageNumber
     })
@@ -765,13 +821,13 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       await ProductStage.findOneAndUpdate(
         {
           productId: resolvedProductId,
-          partNo,
+          code,
           stageNumber: nextStage.stageNumber
         },
         {
           $setOnInsert: {
             productId: resolvedProductId,
-            partNo,
+            code,
             stageNumber: nextStage.stageNumber,
             stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
             availableQuantity: 0,
@@ -791,13 +847,13 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       // 3) Ensure ProcessingStage row exists for the next stage and increment input quantity.
       await ProcessingStage.findOneAndUpdate(
         {
-          partNo,
+          code,
           stageNumber: nextStage.stageNumber,
           $or: [{ qrId: { $exists: false } }, { qrId: null }]
         },
         {
           $setOnInsert: {
-            partNo,
+            code,
             stageNumber: nextStage.stageNumber,
             stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
             inputQuantity: 0,
@@ -833,9 +889,9 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           qrCode: qrCodeItem._id,
           qrId: qrCodeItem.qrId,
           itemId: qrCodeItem.qrId,
-          partNo: qrCodeItem.partNo,
+          code: qrCodeItem.code,
           batchNo: qrCodeItem.batchNo || '',
-          productName: product?.productName || qrCodeItem.partNo,
+          productName: product?.productName || qrCodeItem.code,
           employee: req.user._id,
           employeeName: operatorName,
           fromStageNumber: stageNumber,
@@ -975,7 +1031,7 @@ exports.submitInspection = async (req, res) => {
     const qrCode = await QRCode.findOne({ qrId });
     if (!qrCode) return res.status(404).json({ message: 'QR code not found' });
 
-    const { product, stages } = await resolveProductContext(qrCode.partNo);
+    const { product, stages } = await resolveProductContext(qrCode.code);
     const currentStageNumber = qrCode.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
     const currentIndex = stages.findIndex((stage) => Number(stage.stageNumber) === Number(currentStage.stageNumber));
@@ -1030,9 +1086,9 @@ exports.submitInspection = async (req, res) => {
         qrCode: qrCode._id,
         qrId: qrCode.qrId,
         itemId: qrCode.qrId,
-        partNo: qrCode.partNo,
+        code: qrCode.code,
         batchNo: qrCode.batchNo || '',
-        productName: product?.productName || qrCode.partNo,
+        productName: product?.productName || qrCode.code,
         employee: req.user._id,
         employeeName: getEmployeeName(req.user),
         fromStageNumber: currentStage.stageNumber,
@@ -1070,8 +1126,8 @@ exports.submitInspection = async (req, res) => {
       itemId: qrCode.qrId,
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
-      productName: product?.productName || qrCode.partNo,
-      partNo: qrCode.partNo,
+      productName: product?.productName || qrCode.code,
+      code: qrCode.code,
       batchNo: qrCode.batchNo || '',
       partDescription: product?.description || product?.productName || '',
       stageNumber: currentStage.stageNumber,
@@ -1096,8 +1152,8 @@ exports.submitInspection = async (req, res) => {
       itemId: qrCode.qrId,
       employee: req.user._id,
       employeeName: getEmployeeName(req.user),
-      productName: product?.productName || qrCode.partNo,
-      partNo: qrCode.partNo,
+      productName: product?.productName || qrCode.code,
+      code: qrCode.code,
       partDescription: product?.description || product?.productName || '',
       stageNumber: currentStage.stageNumber,
       stageName: currentStage.stageName,
@@ -1163,7 +1219,7 @@ exports.submitEmployeeInspectionResponse = async (req, res) => {
 exports.getProductHistoryByItem = async (req, res) => {
   try {
     const { itemId } = req.params;
-    const qrCode = await QRCode.findOne({ $or: [{ qrId: itemId }, { partNo: itemId }, { batchNo: itemId }] });
+    const qrCode = await QRCode.findOne({ $or: [{ qrId: itemId }, { code: itemId }, { batchNo: itemId }] });
     if (!qrCode) return res.status(404).json({ message: 'Product item not found' });
     req.params.id = qrCode.qrId;
     return exports.getTraceability(req, res);
@@ -1213,7 +1269,7 @@ exports.getScanLogs = async (req, res) => {
     const searchMatch = search
       ? {
           $or: [
-            { partNo: { $regex: search, $options: 'i' } },
+            { code: { $regex: search, $options: 'i' } },
             { productName: { $regex: search, $options: 'i' } },
             { partDescription: { $regex: search, $options: 'i' } }
           ]
@@ -1230,10 +1286,10 @@ exports.getScanLogs = async (req, res) => {
       { $sort: { updatedAt: -1 } },
       {
         $group: {
-          // Group by productName; we will also expose partNo (QR partNo) separately.
+          // Group by productName; we will also expose code (QR code) separately.
           _id: '$productName',
           productName: { $first: '$productName' },
-          partNo: { $first: '$partNo' },
+          code: { $first: '$code' },
           partDescription: { $first: '$partDescription' },
           currentStage: { $first: '$stageName' },
           lastAction: { $first: '$actionTaken' },
@@ -1248,25 +1304,25 @@ exports.getScanLogs = async (req, res) => {
 
     const rows = await Promise.all(
       grouped.map(async (row) => {
-        // Build metrics using the underlying QRCode.partNo values.
-        const relatedPartNos = await InspectionScanLog.distinct('partNo', {
+        // Build metrics using the underlying QRCode.code values.
+        const relatedCodes = await InspectionScanLog.distinct('code', {
           ...employeeMatch,
           productName: row.productName
         });
 
 
         const [totalIdealProductCount, acceptedCount, rejectedCount, reworkCount] = await Promise.all([
-          QRCode.countDocuments({ partNo: { $in: relatedPartNos } }),
+          QRCode.countDocuments({ code: { $in: relatedCodes } }),
           InspectionFormResponse.aggregate([
-            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $match: { code: { $in: relatedCodes }, ...employeeMatch } },
             { $group: { _id: null, count: { $sum: '$acceptedCount' } } }
           ]),
           InspectionFormResponse.aggregate([
-            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $match: { code: { $in: relatedCodes }, ...employeeMatch } },
             { $group: { _id: null, count: { $sum: '$rejectedCount' } } }
           ]),
           InspectionFormResponse.aggregate([
-            { $match: { partNo: { $in: relatedPartNos }, ...employeeMatch } },
+            { $match: { code: { $in: relatedCodes }, ...employeeMatch } },
             { $group: { _id: null, count: { $sum: '$reworkCount' } } }
           ])
         ]);
@@ -1277,7 +1333,7 @@ exports.getScanLogs = async (req, res) => {
 
         return {
           // Keep frontend compatibility:
-          // - UI column "Part Number" will show partNo
+          // - UI column "Code" will show code compatibility value
           // - UI "Part Description" shows partDescription
           // - Add productName for future UI improvements
           ...row,
@@ -1310,15 +1366,15 @@ exports.getScanLogs = async (req, res) => {
 exports.getTraceability = async (req, res) => {
   try {
     const id = req.params.id;
-    const qrCode = await QRCode.findOne({ $or: [{ _id: id.match(/^[a-f\d]{24}$/i) ? id : undefined }, { qrId: id }, { partNo: id }] });
-    const partNo = qrCode?.partNo || id;
+    const qrCode = await QRCode.findOne({ $or: [{ _id: id.match(/^[a-f\d]{24}$/i) ? id : undefined }, { qrId: id }, { code: id }] });
+    const code = qrCode?.code || id;
 
     const [productContext, scanLogs, responses, movements, qrCodes] = await Promise.all([
-      resolveProductContext(partNo),
-      InspectionScanLog.find({ partNo }).sort({ createdAt: 1 }),
-      InspectionFormResponse.find({ partNo }).sort({ submittedAt: 1 }),
-      StageMovementLog.find({ partNo }).sort({ movedAt: 1 }),
-      QRCode.find({ partNo }).sort({ createdAt: 1 })
+      resolveProductContext(code),
+      InspectionScanLog.find({ code }).sort({ createdAt: 1 }),
+      InspectionFormResponse.find({ code }).sort({ submittedAt: 1 }),
+      StageMovementLog.find({ code }).sort({ movedAt: 1 }),
+      QRCode.find({ code }).sort({ createdAt: 1 })
     ]);
 
     res.json({
@@ -1340,7 +1396,7 @@ exports.getAdminResponses = async (req, res) => {
     const query = {};
     if (search) {
       query.$or = [
-        { partNo: { $regex: search, $options: 'i' } },
+        { code: { $regex: search, $options: 'i' } },
         { productName: { $regex: search, $options: 'i' } },
         { employeeName: { $regex: search, $options: 'i' } }
       ];
@@ -1362,7 +1418,7 @@ exports.getAdminResponses = async (req, res) => {
         };
       }
 
-      const { stages } = await resolveProductContext(qrCode.partNo);
+      const { stages } = await resolveProductContext(qrCode.code);
       const finalStageNumber = Number(stages[stages.length - 1]?.stageNumber || 1);
       const currentStageNumber = Number(qrCode.currentStage || stages[0]?.stageNumber || 1);
       const currentStage = getStageByNumber(stages, currentStageNumber);
@@ -1484,3 +1540,6 @@ exports.getProductionAnalytics = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
+

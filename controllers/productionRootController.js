@@ -6,7 +6,7 @@ const { syncStageOneInputQuantity } = require('../utils/processingStageInventory
 
 const pad3 = (n) => String(n).padStart(3, '0');
 
-const normalizeRootPartNo = (s) => String(s || '').trim().toUpperCase();
+const normalizerootCode = (s) => String(s || '').trim().toUpperCase();
 
 const getFirstStage = async (rootProduct) => {
   // Configuration is stored by productName currently.
@@ -25,11 +25,11 @@ const getFirstStage = async (rootProduct) => {
 
 // POST /api/production-roots
 // Body:
-// { productName, rootPartNo, totalItems, withQR }
+// { productName, rootCode, totalItems, withQR }
 // Creates Product root record, ProductItem records, and auto-creates Stage 1 entry.
 exports.createProductionRoot = async (req, res) => {
   try {
-    const { productName, rootPartNo, numberOfItems } = req.body;
+    const { productName, rootCode, numberOfItems } = req.body;
 
     // Backward compat (some older clients still send totalItems)
     const totalItems = numberOfItems ?? req.body?.totalItems;
@@ -38,11 +38,11 @@ exports.createProductionRoot = async (req, res) => {
 
 
     if (!productName) return res.status(400).json({ message: 'productName is required' });
-    if (!rootPartNo) return res.status(400).json({ message: 'rootPartNo is required' });
+    if (!rootCode) return res.status(400).json({ message: 'rootCode is required' });
 
-    const root = await Product.findOne({ partNo: normalizeRootPartNo(rootPartNo) });
+    const root = await Product.findOne({ code: normalizerootCode(rootCode) });
     if (root) {
-      return res.status(400).json({ message: 'Root Part No already exists' });
+      return res.status(400).json({ message: 'Root code already exists' });
     }
 
     const qty = Number(totalItems);
@@ -57,7 +57,7 @@ exports.createProductionRoot = async (req, res) => {
       numberOfItems: qty,
       stockQuantity: qty,
 
-      partNo: normalizeRootPartNo(rootPartNo),
+      code: normalizerootCode(rootCode),
       productName,
       // minimal defaults for the Product schema
       description: productName,
@@ -68,11 +68,11 @@ exports.createProductionRoot = async (req, res) => {
 
     const createdItems = [];
     for (let i = 1; i <= qty; i++) {
-      const partNo = `${normalizeRootPartNo(rootPartNo)}${pad3(i)}`;
+      const code = `${normalizerootCode(rootCode)}${pad3(i)}`;
       const item = await ProductItem.create({
         rootProductId: rootProduct._id,
-        rootPartNo: normalizeRootPartNo(rootPartNo),
-        partNo,
+        rootCode: normalizerootCode(rootCode),
+        code,
         itemNumber: i,
         dealerId: rootProduct.dealerId
       });
@@ -95,4 +95,6 @@ exports.createProductionRoot = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
 

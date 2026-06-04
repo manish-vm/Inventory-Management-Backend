@@ -16,7 +16,7 @@ exports.getAllAssemblies = async (req, res) => {
     if (status) query.status = status;
 
     const assemblies = await Assembly.find(query)
-      .populate('components.qrId', 'qrId partNo')
+      .populate('components.qrId', 'qrId code')
       .sort({ createdAt: -1 });
     
     res.json(assemblies);
@@ -28,7 +28,7 @@ exports.getAllAssemblies = async (req, res) => {
 exports.getAssemblyById = async (req, res) => {
   try {
     const assembly = await Assembly.findById(req.params.id)
-      .populate('components.qrId', 'qrId partNo');
+      .populate('components.qrId', 'qrId code');
     
     if (!assembly) {
       return res.status(404).json({ message: 'Assembly not found' });
@@ -150,3 +150,4 @@ exports.getDailyAssembly = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+

@@ -3,7 +3,7 @@ const Product = require('../models/Product');
 
 exports.getAllQRCodes = async (req, res) => {
   try {
-    const { search, status, partNo } = req.query;
+    const { search, status, code } = req.query;
     let query = {};
 
     if (search) {
@@ -14,7 +14,7 @@ exports.getAllQRCodes = async (req, res) => {
     }
 
     if (status) query.status = status;
-    if (partNo) query.partNo = partNo;
+    if (code) query.code = code;
 
     const qrCodes = await QRCode.find(query)
       .sort({ createdAt: -1 });
@@ -64,18 +64,18 @@ exports.createQRCode = async (req, res) => {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
 
-    const resolvedPartNo = product.partNo || product.productCode || barcodeNo || productName;
+    const resolvedcode = product.code || product.code || barcodeNo || productName;
 
     const qrCode = new QRCode({
-      partNo: resolvedPartNo,
-      batchNo: barcodeNo || resolvedPartNo,
+      code: resolvedcode,
+      batchNo: barcodeNo || resolvedcode,
       quantity: quantity || 0,
       currentStage: 1
     });
 
     await qrCode.save();
 
-    const populated = await QRCode.findById(qrCode._id).populate('partNo', 'productName productCode');
+    const populated = await QRCode.findById(qrCode._id).populate('code', 'productName code');
     res.status(201).json(populated);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -95,13 +95,13 @@ exports.bulkCreateQRCodes = async (req, res) => {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
 
-    const resolvedPartNo = product.partNo || product.productCode || barcodeNo || productName;
+    const resolvedcode = product.code || product.code || barcodeNo || productName;
 
     const qrCodes = [];
     for (let i = 0; i < count; i++) {
       const qrCode = new QRCode({
-        partNo: resolvedPartNo,
-        batchNo: `${resolvedPartNo}-${i + 1}`,
+        code: resolvedcode,
+        batchNo: `${resolvedcode}-${i + 1}`,
         quantity: quantity || 0,
         currentStage: 1
       });
@@ -231,3 +231,5 @@ exports.getQRCodeStats = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+

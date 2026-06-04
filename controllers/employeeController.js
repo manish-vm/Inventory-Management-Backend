@@ -237,7 +237,7 @@ exports.getEmployeeProfile = async (req, res) => {
         if (!productStats[item.productName]) {
           productStats[item.productName] = { 
             name: item.productName, 
-            code: item.productCode,
+            code: item.code,
             quantitySold: 0, 
             revenue: 0 
           };
@@ -285,5 +285,7 @@ exports.getEmployeeProfile = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+
 
 

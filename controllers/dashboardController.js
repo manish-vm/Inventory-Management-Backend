@@ -222,7 +222,7 @@ exports.getTopProducts = async (req, res) => {
         $group: {
           _id: '$items.productId',
           productName: { $first: '$items.productName' },
-          productCode: { $first: '$items.productCode' },
+          code: { $first: '$items.code' },
           totalSold: { $sum: '$items.quantity' },
           totalRevenue: { $sum: '$items.total' }
         }
@@ -310,5 +310,7 @@ exports.getEmployeeSalesProgress = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
 
 

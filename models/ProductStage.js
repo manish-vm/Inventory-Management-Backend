@@ -7,7 +7,7 @@ const productStageSchema = new mongoose.Schema(
       ref: 'Product',
       required: true
     },
-    partNo: {
+    code: {
       type: String,
       required: true,
       index: true
@@ -55,4 +55,6 @@ const productStageSchema = new mongoose.Schema(
 productStageSchema.index({ productId: 1, stageNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('ProductStage', productStageSchema);
+
+
 

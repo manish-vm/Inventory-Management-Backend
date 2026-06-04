@@ -6,7 +6,7 @@ const processingStageSchema = new mongoose.Schema({
     ref: 'QRCode',
     required: false
   },
-  partNo: { 
+  code: { 
     type: String, 
     required: true
   },
@@ -95,6 +95,8 @@ const processingStageSchema = new mongoose.Schema({
 
 processingStageSchema.index({ qrId: 1 });
 processingStageSchema.index({ qrId: 1, stageNumber: 1 });
-processingStageSchema.index({ partNo: 1, stageNumber: 1 });
+processingStageSchema.index({ code: 1, stageNumber: 1 });
 
 module.exports = mongoose.model('ProcessingStage', processingStageSchema);
+
+

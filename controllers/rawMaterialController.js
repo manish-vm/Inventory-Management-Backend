@@ -3,7 +3,7 @@ const QRCode = require('../models/QRCode');
 
 exports.getAllRawMaterials = async (req, res) => {
   try {
-    const { search, status, partNo } = req.query;
+    const { search, status, code } = req.query;
     let query = {};
 
     if (search) {
@@ -13,10 +13,10 @@ exports.getAllRawMaterials = async (req, res) => {
     }
 
     if (status) query.status = status;
-    if (partNo) query.partNo = partNo;
+    if (code) query.code = code;
 
     const rawMaterials = await RawMaterial.find(query)
-      .populate('qrId', 'qrId partNo')
+      .populate('qrId', 'qrId code')
       .sort({ createdAt: -1 });
     
     res.json(rawMaterials);
@@ -28,7 +28,7 @@ exports.getAllRawMaterials = async (req, res) => {
 exports.getRawMaterialById = async (req, res) => {
   try {
     const rawMaterial = await RawMaterial.findById(req.params.id)
-      .populate('qrId', 'qrId partNo quantity');
+      .populate('qrId', 'qrId code quantity');
     
     if (!rawMaterial) {
       return res.status(404).json({ message: 'Raw material not found' });
@@ -41,7 +41,7 @@ exports.getRawMaterialById = async (req, res) => {
 
 exports.createRawMaterial = async (req, res) => {
   try {
-    const { qrId, partNo, batchNo, totalWeight, unitWeight } = req.body;
+    const { qrId, code, batchNo, totalWeight, unitWeight } = req.body;
 
     const calculatedQty = Math.floor(totalWeight / unitWeight);
     const variance = Math.abs((totalWeight / calculatedQty) - unitWeight) / unitWeight;
@@ -49,7 +49,7 @@ exports.createRawMaterial = async (req, res) => {
 
     const rawMaterial = new RawMaterial({
       qrId,
-      partNo,
+      code,
       batchNo,
       totalWeight,
       unitWeight,
@@ -148,3 +148,4 @@ exports.getRawMaterialStats = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
