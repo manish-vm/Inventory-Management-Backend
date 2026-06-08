@@ -2,6 +2,7 @@ const InspectionFormResponse = require('../models/InspectionFormResponse');
 const InspectionScanLog = require('../models/InspectionScanLog');
 const QRCode = require('../models/QRCode');
 const Product = require('../models/Product');
+const ProductItem = require('../models/ProductItem');
 const StageMovementLog = require('../models/StageMovementLog');
 const ProcessingStage = require('../models/ProcessingStage');
 const ProductStage = require('../models/ProductStage');
@@ -32,6 +33,47 @@ const summarizeResponses = (responses = []) =>
     .map((item) => `${item.question || item.questionId}: ${Array.isArray(item.answer) ? item.answer.join(', ') : item.answer}`)
     .join('; ');
 const stageLabel = (stageNumber, stage) => stage?.stageName || `Stage ${stageNumber}`;
+
+const getProductWithCategoryForResponse = async (response, qrCode) => {
+  const codeCandidates = [
+    qrCode?.code,
+    response?.code,
+    response?.productId
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const productName = String(response?.productName || '').trim();
+
+  if (!codeCandidates.length && !productName) return null;
+
+  const directProduct = await Product.findOne({
+    $or: [
+      ...codeCandidates.map((code) => ({ code })),
+      ...(productName ? [{ productName }] : [])
+    ]
+  })
+    .populate('category', 'name')
+    .lean();
+  if (directProduct) return directProduct;
+
+  const item = await ProductItem.findOne({ code: { $in: codeCandidates } }).lean();
+  if (!item) return null;
+
+  if (item.rootProductId) {
+    const productById = await Product.findById(item.rootProductId)
+      .populate('category', 'name')
+      .lean();
+    if (productById) return productById;
+  }
+
+  if (item.rootCode) {
+    return Product.findOne({ code: item.rootCode })
+      .populate('category', 'name')
+      .lean();
+  }
+
+  return null;
+};
 
 const employeeIdMatch = (employeeId) => {
   const ids = [employeeId].filter(Boolean);
@@ -1409,10 +1451,16 @@ exports.getAdminResponses = async (req, res) => {
       const qrCode = response.qrCode
         ? await QRCode.findById(response.qrCode).lean()
         : await QRCode.findOne({ qrId: response.qrId }).lean();
+      const product = await getProductWithCategoryForResponse(response, qrCode);
+      const category = product?.category;
+      const categoryId = category?._id ? String(category._id) : '';
+      const categoryName = category?.name || '';
 
       if (!qrCode) {
         return {
           ...response,
+          categoryId,
+          categoryName,
           currentStageNumber: response.stageNumber,
           currentStageName: response.stageName
         };
@@ -1426,6 +1474,8 @@ exports.getAdminResponses = async (req, res) => {
 
       return {
         ...response,
+        categoryId,
+        categoryName,
         currentStageNumber,
         currentStageName: isCompleted ? 'Completed' : stageLabel(currentStageNumber, currentStage),
         itemStatus: qrCode.status || 'generated'
@@ -1540,6 +1590,3 @@ exports.getProductionAnalytics = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-
-
