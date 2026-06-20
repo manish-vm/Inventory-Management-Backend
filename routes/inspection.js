@@ -13,6 +13,7 @@ router.get('/employee/traceability/:id', inspectionController.getTraceability);
 
 router.get('/admin/responses', adminOnly, inspectionController.getAdminResponses);
 router.get('/admin/production-analytics', adminOnly, inspectionController.getProductionAnalytics);
+router.get('/admin/rejection-report', adminOnly, inspectionController.getRejectionReport);
 router.get('/admin/responses/:id', adminOnly, inspectionController.getResponseById);
 router.get('/admin/traceability/:id', adminOnly, inspectionController.getTraceability);
 

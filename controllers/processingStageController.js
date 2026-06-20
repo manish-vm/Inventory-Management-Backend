@@ -191,7 +191,11 @@ exports.getStageReviewStats = async (req, res) => {
 
     const row = agg[0] || { acceptedCount: 0, rejectedCount: 0, reworkCount: 0, total: 0 };
     row.pendingCount = Math.max(
-      Number(row.total || 0) - (Number(row.acceptedCount || 0) + Number(row.rejectedCount || 0) + Number(row.reworkCount || 0)),
+      Number(row.total || 0) - (
+        Number(row.acceptedCount || 0)
+        + Number(row.rejectedCount || 0)
+        + Number(row.reworkCount || 0)
+      ),
       0
     );
     res.json(row);
@@ -287,6 +291,4 @@ exports.getStageStats = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-
 

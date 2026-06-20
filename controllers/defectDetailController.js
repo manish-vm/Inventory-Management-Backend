@@ -3,7 +3,11 @@ const DefectDetail = require('../models/DefectDetail');
 exports.getDefects = async (req, res) => {
   try {
     const query = {};
-    if (req.query.type) query.type = req.query.type;
+    if (req.query.type) {
+      query.type = ['reject', 'rework'].includes(req.query.type)
+        ? { $in: [req.query.type, 'both'] }
+        : req.query.type;
+    }
     if (req.query.isActive !== undefined) query.isActive = req.query.isActive === 'true';
     const defects = await DefectDetail.find(query).sort({ type: 1, name: 1 });
     res.json(defects);
@@ -15,7 +19,7 @@ exports.getDefects = async (req, res) => {
 exports.createDefect = async (req, res) => {
   try {
     const { type, name, isActive } = req.body;
-    if (!['reject', 'rework'].includes(type)) return res.status(400).json({ message: 'type must be reject or rework' });
+    if (!['reject', 'rework', 'both'].includes(type)) return res.status(400).json({ message: 'type must be reject, rework, or both' });
     if (!name) return res.status(400).json({ message: 'name is required' });
 
     const defect = await DefectDetail.findOneAndUpdate(
@@ -31,6 +35,9 @@ exports.createDefect = async (req, res) => {
 
 exports.updateDefect = async (req, res) => {
   try {
+    if (req.body.type && !['reject', 'rework', 'both'].includes(req.body.type)) {
+      return res.status(400).json({ message: 'type must be reject, rework, or both' });
+    }
     const defect = await DefectDetail.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!defect) return res.status(404).json({ message: 'Defect detail not found' });
     res.json(defect);

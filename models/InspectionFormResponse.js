@@ -4,7 +4,9 @@ const inspectionAnswerSchema = new mongoose.Schema({
   questionId: String,
   question: String,
   type: String,
-  answer: mongoose.Schema.Types.Mixed
+  answer: mongoose.Schema.Types.Mixed,
+  optionKey: String,
+  defectDetail: String
 }, { _id: false });
 
 const inspectionFormResponseSchema = new mongoose.Schema({
@@ -53,5 +55,4 @@ inspectionFormResponseSchema.index({ employee: 1, submittedAt: -1 });
 inspectionFormResponseSchema.index({ stageNumber: 1, inspectionResult: 1 });
 
 module.exports = mongoose.model('InspectionFormResponse', inspectionFormResponseSchema);
-
 

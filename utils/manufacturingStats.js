@@ -234,5 +234,3 @@ module.exports = {
   getManufacturingStatsByCode
 };
 
-
-

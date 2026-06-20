@@ -2,10 +2,36 @@ const Dealer = require("../models/Dealer");
 const User = require("../models/User");
 const Invoice = require("../models/Invoice");
 const Product = require("../models/Product");
+const Role = require("../models/Role");
+
+const findScopedRole = (roleId, user) => Role.findOne({
+  _id: roleId,
+  dealerId: user.dealerId || null
+});
+
+const stagesFromRole = (role) => {
+  const stages = (role?.permissions || []).flatMap((category) =>
+    category.subcategories?.length
+      ? category.subcategories.flatMap((subcategory) =>
+          (subcategory.products || []).flatMap((product) => product.stages || [])
+        )
+      : (category.products || []).flatMap((product) => product.stages || [])
+  );
+  const uniqueStages = new Map();
+  stages.forEach((stage) => {
+    const key = `${stage.stageNumber}|${stage.stageName}`;
+    if (!uniqueStages.has(key)) uniqueStages.set(key, { stageNumber: stage.stageNumber, stageName: stage.stageName });
+  });
+  return [...uniqueStages.values()];
+};
 
 exports.createEmployee = async (req, res) => {
   try {
-    const { password, canLogin, manufacturingLevel, assignedStages = [], ...employeeData } = req.body;
+    const { password, assignedRole, ...employeeData } = req.body;
+    if (!assignedRole) return res.status(400).json({ message: 'Select a role for the employee' });
+    const role = await findScopedRole(assignedRole, req.user);
+    if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
+    const assignedStages = stagesFromRole(role);
     
     // Ensure employee belongs to admin's dealer
     employeeData.dealerId = req.user.dealerId;
@@ -19,8 +45,9 @@ exports.createEmployee = async (req, res) => {
       password: password,
       role: 'employee',
       dealerId: req.user.dealerId,
-      manufacturingLevel: manufacturingLevel || 1,
-      assignedStages: Array.isArray(assignedStages) ? assignedStages : [],
+      manufacturingLevel: assignedStages[0]?.stageNumber || 1,
+      assignedStages,
+      assignedRole: role._id,
       isActive: true
     });
 
@@ -35,7 +62,7 @@ exports.getAdminEmployees = async (req, res) => {
     const employees = await User.find({
       role: 'employee',
       dealerId: req.user.dealerId
-    }).select('name email phone address username isActive manufacturingLevel assignedStages createdAt').sort({ createdAt: -1 });
+    }).select('name email phone address username isActive manufacturingLevel assignedStages assignedRole createdAt').populate('assignedRole', 'roleName').sort({ createdAt: -1 });
     res.json(employees);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -53,19 +80,26 @@ exports.updateEmployee = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const { password, name, email, phone, address, isActive, manufacturingLevel, assignedStages } = req.body;
+    const { password, name, email, phone, address, isActive, assignedRole } = req.body;
     
     if (name) employee.name = name;
     if (email) employee.email = email;
     if (phone) employee.phone = phone;
     if (address) employee.address = address;
     if (isActive !== undefined) employee.isActive = isActive;
-    if (manufacturingLevel !== undefined) employee.manufacturingLevel = manufacturingLevel;
-    if (Array.isArray(assignedStages)) employee.assignedStages = assignedStages;
+    if (assignedRole !== undefined) {
+      if (!assignedRole) return res.status(400).json({ message: 'Select a role for the employee' });
+      const role = await findScopedRole(assignedRole, req.user);
+      if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
+      const assignedStages = stagesFromRole(role);
+      employee.assignedRole = role._id;
+      employee.assignedStages = assignedStages;
+      employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
+    }
     if (password) employee.password = password;
 
     await employee.save();
-    const updated = await User.findById(req.params.id).select('-password');
+    const updated = await User.findById(req.params.id).select('-password').populate('assignedRole', 'roleName');
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -285,7 +319,5 @@ exports.getEmployeeProfile = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
-
-
 
 

@@ -26,6 +26,11 @@ const userSchema = new mongoose.Schema({
     stageNumber: Number,
     stageName: String
   }],
+  assignedRole: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Role',
+    default: null
+  },
   isActive: { type: Boolean, default: true },
   monthlySalesTarget: { type: Number, default: 0 },
   salesCount: { type: Number, default: 0 }
@@ -45,4 +50,3 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 module.exports = mongoose.model('User', userSchema);
-

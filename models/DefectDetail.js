@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const defectDetailSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['reject', 'rework'],
+    enum: ['reject', 'rework', 'both'],
     required: true,
     index: true
   },

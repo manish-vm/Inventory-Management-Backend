@@ -6,6 +6,7 @@ const ProductItem = require('../models/ProductItem');
 const StageMovementLog = require('../models/StageMovementLog');
 const ProcessingStage = require('../models/ProcessingStage');
 const ProductStage = require('../models/ProductStage');
+const Role = require('../models/Role');
 const mongoose = require('mongoose');
 const {
   buildProductPayload,
@@ -135,6 +136,35 @@ const canEmployeeProcessStage = (employee, stageNumber) => {
   return assignedStageNumbers.includes(Number(stageNumber));
 };
 
+const getEmployeeRolePermission = async (employee, productId) => {
+  if (employee?.role !== 'employee') return null;
+  if (!employee.assignedRole || !productId) return { allowed: false, stageNumbers: [] };
+
+  const role = await Role.findById(employee.assignedRole).lean();
+  if (!role) return { allowed: false, stageNumbers: [] };
+
+  const productIdString = String(productId);
+  const products = (role.permissions || []).flatMap((category) =>
+    category.subcategories?.length
+      ? category.subcategories.flatMap((subcategory) => subcategory.products || [])
+      : category.products || []
+  );
+  const permission = products.find((product) => String(product.productId) === productIdString);
+  if (!permission) return { allowed: false, stageNumbers: [] };
+
+  return {
+    allowed: true,
+    stageNumbers: (permission.stages || []).map((stage) => Number(stage.stageNumber)).filter(Number.isFinite)
+  };
+};
+
+const getEmployeeAssignedProductIds = async (employee) => {
+  if (employee?.role !== 'employee') return null;
+  if (!employee.assignedRole) return [];
+  const role = await Role.findById(employee.assignedRole).select('products').lean();
+  return role?.products || [];
+};
+
 const getCurrentQrForCodes = async (codes = []) => {
   const normalizedCodes = codes.filter(Boolean);
   if (!normalizedCodes.length) return null;
@@ -149,12 +179,6 @@ const getAvailableCountForStage = async (codes = [], stageNumber) => {
   const normalizedStageNumber = Number(stageNumber);
   if (!normalizedCodes.length || !Number.isFinite(normalizedStageNumber)) return 0;
 
-  const qrCount = await QRCode.countDocuments({
-    code: { $in: normalizedCodes },
-    currentStage: normalizedStageNumber
-  });
-  if (qrCount > 0) return qrCount;
-
   const productStages = await ProductStage.find({
     code: { $in: normalizedCodes },
     stageNumber: normalizedStageNumber
@@ -162,12 +186,20 @@ const getAvailableCountForStage = async (codes = [], stageNumber) => {
 
   const productStageCount = productStages.reduce((sum, row) => {
     const pending = Number(row.pendingCount);
-    if (Number.isFinite(pending) && pending > 0) return sum + pending;
+    if (Number.isFinite(pending)) return sum + Math.max(pending, 0);
     const available = Number(row.availableQuantity || 0);
-    const processed = Number(row.acceptedCount || 0) + Number(row.rejectedCount || 0) + Number(row.reworkCount || 0);
+    const processed = Number(row.acceptedCount || 0)
+      + Number(row.rejectedCount || 0)
+      + Number(row.reworkCount || 0);
     return sum + Math.max(available - processed, 0);
   }, 0);
-  if (productStageCount > 0) return productStageCount;
+  if (productStages.length) return productStageCount;
+
+  const qrCount = await QRCode.countDocuments({
+    code: { $in: normalizedCodes },
+    currentStage: normalizedStageNumber
+  });
+  if (qrCount > 0) return qrCount;
 
   const processingStages = await ProcessingStage.find({
     code: { $in: normalizedCodes },
@@ -177,23 +209,35 @@ const getAvailableCountForStage = async (codes = [], stageNumber) => {
 
   return processingStages.reduce((sum, row) => {
     const input = Number(row.inputQuantity || 0);
-    const processed = Number(row.acceptedQuantity || 0) + Number(row.rejectedQuantity || 0) + Number(row.reworkQuantity || 0);
+    const processed = Number(row.acceptedQuantity || 0)
+      + Number(row.rejectedQuantity || 0)
+      + Number(row.reworkQuantity || 0);
     return sum + Math.max(input - processed, 0);
   }, 0);
 };
 
-const buildEmployeeStageRows = async ({ codes = [], stages = [], employee }) => {
+const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, productId, currentStageNumber }) => {
   const normalizedCodes = codes.filter(Boolean);
+  const rolePermission = await getEmployeeRolePermission(employee, productId);
   return Promise.all(
-    stages.map(async (stage) => ({
-      stageNumber: stage.stageNumber,
-      stageName: stage.stageName,
-      stageType: stage.stageType,
-      selectable: canEmployeeProcessStage(employee, stage.stageNumber),
-      availableCount: normalizedCodes.length
+    stages.map(async (stage) => {
+      const isCurrent = Number(stage.stageNumber) === Number(currentStageNumber);
+      const isAssigned = employee?.role !== 'employee'
+        || (rolePermission?.allowed && rolePermission.stageNumbers.includes(Number(stage.stageNumber)));
+      const availableCount = normalizedCodes.length
         ? await getAvailableCountForStage(normalizedCodes, stage.stageNumber)
-        : 0
-    }))
+        : 0;
+      const isOpenIntakeStage = Number(stage.stageNumber) === 1;
+      return {
+        stageNumber: stage.stageNumber,
+        stageName: stage.stageName,
+        stageType: stage.stageType,
+        isCurrent,
+        isAssigned,
+        selectable: isAssigned && (isOpenIntakeStage || availableCount > 0),
+        availableCount
+      };
+    })
   );
 };
 
@@ -263,6 +307,10 @@ exports.getProductForEmployee = async (req, res) => {
     if (!qrCode) return res.status(404).json({ message: 'Product item not found' });
 
     const payload = await buildProductPayload(qrCode);
+    const rolePermission = await getEmployeeRolePermission(req.user, payload.product?._id);
+    if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+      return res.status(403).json({ message: 'This product is not assigned to your role' });
+    }
     const access = validateEmployeeStageAccess({ employee: req.user, currentStage: payload.currentStage, stages: payload.stages });
 
     if (!access.allowed) {
@@ -312,28 +360,24 @@ exports.searchProductsForEmployee = async (req, res) => {
   try {
     const { q = '' } = req.query;
     const term = String(q).trim();
-    const assignedStageNumbers = req.user?.role === 'employee'
-      ? (
-          Array.isArray(req.user.assignedStages) && req.user.assignedStages.length
-            ? req.user.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
-            : [Number(req.user.manufacturingLevel || 1)]
-        )
-      : [];
-    const stageMatch = assignedStageNumbers.length
-      ? { currentStage: { $in: assignedStageNumbers } }
-      : {};
+    const role = req.user?.role === 'employee' && req.user.assignedRole
+      ? await Role.findById(req.user.assignedRole).select('products').lean()
+      : null;
+    const assignedProductIds = role?.products || [];
+    if (req.user?.role === 'employee' && assignedProductIds.length === 0) return res.json([]);
 
     // If employee searches by product name, we must return product-level entry
     // and show overall total QR count under that product.
+    const productFilter = req.user?.role === 'employee' ? { _id: { $in: assignedProductIds } } : {};
     const productRows = await Product.find(
       term
-        ? {
+        ? { ...productFilter,
             $or: [
               { productName: { $regex: term, $options: 'i' } },
               { code: { $regex: term, $options: 'i' } }
             ]
           }
-        : {}
+        : productFilter
     )
       .limit(50)
       .lean();
@@ -356,7 +400,7 @@ exports.searchProductsForEmployee = async (req, res) => {
           .filter(Boolean);
 
         const latestQrRows = codes.length
-          ? await QRCode.find({ code: { $in: codes }, ...stageMatch }).sort({ updatedAt: -1 }).limit(1).lean()
+          ? await QRCode.find({ code: { $in: codes } }).sort({ updatedAt: -1 }).limit(1).lean()
           : null;
 
         const latestQr = latestQrRows?.[0];
@@ -367,10 +411,9 @@ exports.searchProductsForEmployee = async (req, res) => {
             count: await getAvailableCountForStage(codes, stage.stageNumber)
           }))
         );
-        const availableCount = assignedStageNumbers.length
-          ? stageCounts
-              .filter((item) => assignedStageNumbers.includes(item.stageNumber))
-              .reduce((sum, item) => sum + item.count, 0)
+        const permission = await getEmployeeRolePermission(req.user, matchedByProductName.find((p) => p.productName === productName)?._id);
+        const availableCount = permission?.stageNumbers?.length
+          ? stageCounts.filter((item) => permission.stageNumbers.includes(item.stageNumber)).reduce((sum, item) => sum + item.count, 0)
           : stageCounts.reduce((sum, item) => sum + item.count, 0);
         const firstAvailableStage = stageCounts.find((item) => item.count > 0);
 
@@ -411,8 +454,11 @@ exports.searchProductsForEmployee = async (req, res) => {
 exports.getBatchProductForEmployee = async (req, res) => {
   try {
     const { key } = req.params;
+    const assignedProductIds = await getEmployeeAssignedProductIds(req.user);
+    const productScope = assignedProductIds === null ? {} : { _id: { $in: assignedProductIds } };
 
     const productMatch = await Product.findOne({
+      ...productScope,
       $or: [
         { productName: key },
         {
@@ -427,19 +473,28 @@ exports.getBatchProductForEmployee = async (req, res) => {
 
     // If matched by productName, compute total QR count under that product name.
     if (productMatch?.productName) {
-      const matchedProducts = await Product.find({ productName: productMatch.productName }).select('code').lean();
+      const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id);
+      if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+        return res.status(403).json({ message: 'This product is not assigned to your role' });
+      }
+      const matchedProducts = await Product.find({ productName: productMatch.productName, ...productScope }).select('code').lean();
       const codes = matchedProducts.map((p) => p.code).filter(Boolean);
 
       const currentQr = await getCurrentQrForCodes(codes);
 
       const primaryCode = currentQr?.code || codes[0] || productMatch.code;
       const { config, stages } = await resolveProductContext(primaryCode);
-      const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user });
-      const firstAvailableStage = stageRows.find((stage) => Number(stage.availableCount || 0) > 0);
+      const preliminaryStageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id });
+      const firstAvailableStage = preliminaryStageRows.find((stage) => Number(stage.availableCount || 0) > 0);
       const currentStageNumber = currentQr?.currentStage > 0
         ? currentQr.currentStage
         : firstAvailableStage?.stageNumber || stages[0]?.stageNumber || 1;
       const currentStage = getStageByNumber(stages, currentStageNumber);
+      const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber });
+
+      if (req.user?.role === 'employee' && !stageRows.some((stage) => stage.selectable)) {
+        return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your role` });
+      }
 
       const availableCount = await getAvailableCountForStage(codes, currentStageNumber);
 
@@ -468,6 +523,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
           batchNo: '',
           partDescription: productMatch.description || productMatch.productName || '',
           availableCount,
+          createdDate: productMatch.createdAt || currentQr?.createdAt || null,
           currentStage: currentStage.stageName,
           currentStageNumber
         },
@@ -506,6 +562,10 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const code = qrCode?.code || productMatch.code;
     const { product, config, stages } = await resolveProductContext(code);
     const resolvedProduct = product || productMatch;
+    const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id);
+    if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+      return res.status(403).json({ message: 'This product is not assigned to your role' });
+    }
     const currentStageNumber = qrCode?.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
     const availableCount = await getAvailableCountForStage([code], currentStageNumber) ||
@@ -539,11 +599,12 @@ exports.getBatchProductForEmployee = async (req, res) => {
         batchNo: qrCode?.batchNo || '',
         partDescription: resolvedProduct?.description || resolvedProduct?.productName || '',
         availableCount,
+        createdDate: resolvedProduct?.createdAt || qrCode?.createdAt || null,
         currentStage: currentStage.stageName,
         currentStageNumber
       },
       stage: currentStage,
-      stages: await buildEmployeeStageRows({ codes: [code], stages, employee: req.user }),
+      stages: await buildEmployeeStageRows({ codes: [code], stages, employee: req.user, productId: resolvedProduct?._id, currentStageNumber }),
       forms: (() => {
         const questions = currentStage?.reviewForm?.questions || currentStage?.reviewForm?.outcomes || [];
         return questions.length
@@ -617,6 +678,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       const selectedByQuestion = {};
       const countsByQuestionOption = {};
       const freeFormCountsByQuestion = {};
+      const missingDefectDetails = [];
 
       for (const r of responses || []) {
         const qKey = String(r?.questionId || r?.question || 'unknown');
@@ -627,11 +689,20 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           if (!optionKey) continue;
           const countVal = Math.max(0, Number(r?.answer) || 0);
           if (optionKey === '__response__') {
+            if (countVal > 0 && !String(r?.defectDetail || '').trim()) {
+              missingDefectDetails.push({
+                question: r?.question || qKey,
+                optionKey
+              });
+            }
             freeFormCountsByQuestion[qKey] = (freeFormCountsByQuestion[qKey] || 0) + countVal;
             continue;
           }
           if (!countsByQuestionOption[qKey]) countsByQuestionOption[qKey] = {};
-          countsByQuestionOption[qKey][optionKey] = countVal;
+          countsByQuestionOption[qKey][optionKey] = {
+            count: countVal,
+            defectDetail: String(r?.defectDetail || '').trim()
+          };
           continue;
         }
 
@@ -646,7 +717,14 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         let qSum = 0;
         const countsForQ = countsByQuestionOption[qKey] || {};
         for (const opt of selectedSet) {
-          const c = Math.max(0, Number(countsForQ[opt]) || 0);
+          const countEntry = countsForQ[opt] || {};
+          const c = Math.max(0, Number(countEntry.count) || 0);
+          if (c > 0 && !countEntry.defectDetail) {
+            missingDefectDetails.push({
+              question: qKey,
+              optionKey: opt
+            });
+          }
           qSum += c;
         }
         overall += qSum;
@@ -659,7 +737,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         perQuestion[qKey] = (perQuestion[qKey] || 0) + c;
       }
 
-      return { overall, perQuestion };
+      return { overall, perQuestion, missingDefectDetails };
     };
 
     const derivedRejected = deriveChoiceCountsFromResponses(rejectionFormResponses);
@@ -667,9 +745,16 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     const counts = {
       accepted: toCount(acceptedCount),
-      rejected: derivedRejected.overall,
-      rework: derivedRework.overall
+      rejected: derivedRejected.overall || toCount(rejectedCount),
+      rework: derivedRework.overall || toCount(reworkCount)
     };
+
+    if (derivedRejected.missingDefectDetails.length) {
+      return res.status(400).json({ message: 'Select a reject defect type for every counted option' });
+    }
+    if (derivedRework.missingDefectDetails.length) {
+      return res.status(400).json({ message: 'Select a rework defect type for every counted option' });
+    }
 
     const total = counts.accepted + counts.rejected + counts.rework;
 
@@ -684,31 +769,24 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       derivedReworkByQuestion: derivedRework.perQuestion
     });
     const qrCode = await QRCode.findOne({ code, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
-    const qrAvailableCount = qrCode?.quantity || await QRCode.countDocuments({ code, ...(batchNo ? { batchNo } : {}), currentStage: stageNumber });
-    const availableCount = qrAvailableCount || await getAvailableCountForStage([code], stageNumber);
-    if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
-    if (total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
-    if ((counts.rejected > 0 || counts.rework > 0) && !String(remarks).trim()) {
-      return res.status(400).json({ message: 'Remarks are required when rejected or rework items are present' });
-    }
-
     const { product, stages } = await resolveProductContext(code);
+    const resolvedProductId = product?._id || productId;
+    const isOpenIntakeStage = Number(stageNumber) === 1;
+    const stageAvailableCount = await getAvailableCountForStage([code], stageNumber);
+    const hasStageQueue = await ProductStage.exists({ productId: resolvedProductId, stageNumber });
+    const availableCount = hasStageQueue ? stageAvailableCount : Number(qrCode?.quantity || 0);
+    if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
+    if (!isOpenIntakeStage && total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
     const stage = getStageByNumber(stages, stageNumber);
 
     // Update ProductStage counters based on submitted counts.
     // Keep QR logic only for trace/movement; ProductStage becomes source of truth for stage review stats.
     // NOTE: availableQuantity is expected to be initialized when ProductStage rows are created.
     // If not found, create it with sane defaults.
-    const ProductStage = require('../models/ProductStage');
-
-    const resolvedProductId = product?._id || productId;
-
-
     // Ensure ProductStage row exists for this product+stage
     const productStage = await ProductStage.findOneAndUpdate(
       {
         productId: resolvedProductId,
-        code,
         stageNumber
       },
       {
@@ -718,11 +796,11 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           code,
           stageNumber,
           stageName: stage?.stageName || `Stage ${stageNumber}`,
-          availableQuantity: availableCount,
+          availableQuantity: isOpenIntakeStage ? 0 : availableCount,
           acceptedCount: 0,
           rejectedCount: 0,
           reworkCount: 0,
-          pendingCount: availableCount
+          pendingCount: isOpenIntakeStage ? 0 : availableCount
         }
       },
       { new: true, upsert: true }
@@ -732,7 +810,17 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const nextAccepted = Number(productStage.acceptedCount || 0) + counts.accepted;
     const nextRejected = Number(productStage.rejectedCount || 0) + counts.rejected;
     const nextRework = Number(productStage.reworkCount || 0) + counts.rework;
-    const nextPending = Math.max(Number(productStage.availableQuantity || availableCount || 0) - (nextAccepted + nextRejected + nextRework), 0);
+    // All submitted outcomes leave the active queue. Only accepted units move
+    // forward; rejected and rework remain recorded in logs and stage statistics.
+    const currentPending = Number.isFinite(Number(productStage.pendingCount))
+      ? Number(productStage.pendingCount)
+      : availableCount;
+    const nextPending = isOpenIntakeStage
+      ? 0
+      : Math.max(currentPending - total, 0);
+    const nextAvailableQuantity = isOpenIntakeStage
+      ? Number(productStage.availableQuantity || 0) + total
+      : Number(productStage.availableQuantity || availableCount || 0);
 
     await ProductStage.updateOne(
       {
@@ -743,6 +831,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           acceptedCount: nextAccepted,
           rejectedCount: nextRejected,
           reworkCount: nextRework,
+          availableQuantity: nextAvailableQuantity,
           pendingCount: nextPending
         }
       }
@@ -759,7 +848,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           code,
           stageNumber,
           stageName: stage?.stageName || `Stage ${stageNumber}`,
-          inputQuantity: Number(productStage.availableQuantity || availableCount || total || 0),
+          inputQuantity: nextAvailableQuantity,
           acceptedQuantity: nextAccepted,
           rejectedQuantity: nextRejected,
           reworkQuantity: nextRework,
@@ -836,13 +925,18 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const currentStageIndex = stages.findIndex((s) => Number(s.stageNumber) === Number(stageNumber));
     const nextStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] : null;
 
-    const qrsPool = await QRCode.find({
+    const candidateQrs = await QRCode.find({
       code,
       ...(batchNo ? { batchNo } : {}),
       currentStage: stageNumber
     })
-      .sort({ createdAt: 1 })
-      .limit(total);
+      .sort({ createdAt: 1 });
+
+    // ProductStage owns batch quantities. QR movement is only valid when the
+    // product really has one QR document per physical unit.
+    const hasUnitLevelQrs = candidateQrs.length >= total
+      && candidateQrs.slice(0, total).every((item) => Number(item.quantity || 1) === 1);
+    const qrsPool = hasUnitLevelQrs ? candidateQrs.slice(0, total) : [];
 
     const acceptedQrs = qrsPool.slice(0, counts.accepted);
     const rejectedQrs = qrsPool.slice(counts.accepted, counts.accepted + counts.rejected);
@@ -851,32 +945,32 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const operatorName = getEmployeeName(req.user);
 
     // Move accepted to next stage (if exists), else mark as accepted at current stage (final stage)
-    if (acceptedQrs.length && nextStage) {
-      // 1) Update QR codes to be processed at the next stage
-      await QRCode.updateMany(
-        { _id: { $in: acceptedQrs.map((q) => q._id) } },
-        { $set: { currentStage: nextStage.stageNumber, status: 'processing' } }
-      );
+    if (counts.accepted > 0 && nextStage) {
+      // Update unit-level QR codes when they exist. Batch quantities move via
+      // ProductStage below and must not move an entire aggregate QR document.
+      if (acceptedQrs.length) {
+        await QRCode.updateMany(
+          { _id: { $in: acceptedQrs.map((q) => q._id) } },
+          { $set: { currentStage: nextStage.stageNumber, status: 'processing' } }
+        );
+      }
 
       // 2) Queue counters: accepted items are now *arrived for processing* in next stage,
       // but they should not be counted as 'accepted' at the next stage yet.
       await ProductStage.findOneAndUpdate(
         {
           productId: resolvedProductId,
-          code,
           stageNumber: nextStage.stageNumber
         },
         {
           $setOnInsert: {
             productId: resolvedProductId,
             code,
-            stageNumber: nextStage.stageNumber,
-            stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
-            availableQuantity: 0,
+           stageNumber: nextStage.stageNumber,
+           stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
             acceptedCount: 0,
             rejectedCount: 0,
-            reworkCount: 0,
-            pendingCount: 0
+            reworkCount: 0
           },
           $inc: {
             availableQuantity: counts.accepted,
@@ -898,7 +992,6 @@ exports.submitBatchInspectionResponse = async (req, res) => {
             code,
             stageNumber: nextStage.stageNumber,
             stageName: nextStage.stageName || `Stage ${nextStage.stageNumber}`,
-            inputQuantity: 0,
             outputQuantity: 0,
             acceptedQuantity: 0,
             rejectedQuantity: 0,
@@ -1041,6 +1134,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
 
     res.status(201).json({ message: 'Batch inspection submitted', response: responseDoc });
   } catch (error) {
+    console.error('[inspection submitBatchInspectionResponse] Failed after submit:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -1392,11 +1486,36 @@ exports.getScanLogs = async (req, res) => {
       })
     );
 
+    const detailMatch = {
+      ...employeeMatch,
+      ...(search
+        ? {
+            $or: [
+              { code: { $regex: search, $options: 'i' } },
+              { productName: { $regex: search, $options: 'i' } },
+              { partDescription: { $regex: search, $options: 'i' } },
+              { stageName: { $regex: search, $options: 'i' } }
+            ]
+          }
+        : {})
+    };
+    const detailRows = await InspectionFormResponse.find(detailMatch)
+      .sort({ submittedAt: 1, createdAt: 1 })
+      .lean();
+    const acceptedBeforeByStage = new Map();
+    const details = detailRows.map((item) => {
+      const key = `${item.code}::${item.stageNumber}`;
+      const previousAcceptedCount = acceptedBeforeByStage.get(key) || 0;
+      acceptedBeforeByStage.set(key, previousAcceptedCount + Number(item.acceptedCount || 0));
+      return { ...item, previousAcceptedCount };
+    }).reverse().slice(0, Number(limit) * 5);
+
 
     res.json({
       success: true,
       logs: rows,
       rows,
+      details,
       page: Number(page),
       limit: Number(limit)
     });
@@ -1585,6 +1704,103 @@ exports.getProductionAnalytics = async (req, res) => {
       stageWise,
       productWise,
       employeeWise
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getRejectionReport = async (req, res) => {
+  try {
+    const now = new Date();
+    const month = Math.min(Math.max(Number(req.query.month) || now.getMonth() + 1, 1), 12);
+    const year = Number(req.query.year) || now.getFullYear();
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const responses = await InspectionFormResponse.find({
+      submittedAt: { $gte: start, $lt: end }
+    })
+      .select('acceptedCount rejectedCount reworkCount rejectionFormResponses submittedAt')
+      .lean();
+
+    const makeDayTotals = () =>
+      Array.from({ length: daysInMonth }, (_, index) => ({
+        day: index + 1,
+        output: 0,
+        rejection: 0,
+        rejectionPercent: 0
+      }));
+
+    const dayTotals = makeDayTotals();
+    const rowMap = new Map();
+    const totals = { output: 0, rejection: 0, rejectionPercent: 0 };
+
+    const ensureRow = (detail) => {
+      const key = String(detail || 'Unspecified rejection').trim() || 'Unspecified rejection';
+      if (!rowMap.has(key)) {
+        rowMap.set(key, {
+          defectGroup: 'Rejection',
+          rejectionDetails: key,
+          days: makeDayTotals(),
+          total: 0,
+          totalPercent: 0
+        });
+      }
+      return rowMap.get(key);
+    };
+
+    const getResponseCount = (answer) => {
+      if (answer?.type !== 'count') return 0;
+      return Math.max(0, Number(answer.answer) || 0);
+    };
+
+    for (const response of responses) {
+      const accepted = Math.max(0, Number(response.acceptedCount) || 0);
+      const rejected = Math.max(0, Number(response.rejectedCount) || 0);
+      const rework = Math.max(0, Number(response.reworkCount) || 0);
+      const output = accepted + rejected + rework;
+      const dayIndex = Math.max(0, Math.min(daysInMonth - 1, new Date(response.submittedAt).getDate() - 1));
+
+      dayTotals[dayIndex].output += output;
+      dayTotals[dayIndex].rejection += rejected;
+      totals.output += output;
+      totals.rejection += rejected;
+
+      const rejectionResponses = Array.isArray(response.rejectionFormResponses)
+        ? response.rejectionFormResponses
+        : [];
+
+      for (const answer of rejectionResponses) {
+        const count = getResponseCount(answer);
+        if (!count) continue;
+        const detail = answer.defectDetail || answer.optionKey || answer.question || 'Unspecified rejection';
+        const row = ensureRow(detail);
+        row.days[dayIndex].rejection += count;
+        row.total += count;
+      }
+    }
+
+    for (const day of dayTotals) {
+      day.rejectionPercent = day.output ? Number(((day.rejection / day.output) * 100).toFixed(2)) : 0;
+    }
+
+    totals.rejectionPercent = totals.output ? Number(((totals.rejection / totals.output) * 100).toFixed(2)) : 0;
+
+    const rows = Array.from(rowMap.values())
+      .map((row) => ({
+        ...row,
+        totalPercent: totals.rejection ? Number(((row.total / totals.rejection) * 100).toFixed(2)) : 0
+      }))
+      .sort((a, b) => b.total - a.total || a.rejectionDetails.localeCompare(b.rejectionDetails));
+
+    res.json({
+      month,
+      year,
+      days: dayTotals,
+      totals,
+      rows
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
