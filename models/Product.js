@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const productSchema = new mongoose.Schema({
   productName: { type: String, required: true },
   code: { type: String, unique: true, sparse: true, trim: true },
+  slug: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
   description: { type: String },
 
   // Only the fields required by your product concept
@@ -32,10 +33,16 @@ const productSchema = new mongoose.Schema({
 
 
 const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+const normalizeSlug = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '');
 
 // Auto-generate unique Code before saving.
 productSchema.pre('save', async function(next) {
   this.code = normalizeCode(this.code);
+  this.slug = normalizeSlug(this.slug || this.productName || this.code);
 
   if (!this.code) {
     let isUnique = false;
@@ -55,10 +62,13 @@ productSchema.pre('save', async function(next) {
     
     this.code = newCode;
   }
+
+  if (!this.slug) {
+    this.slug = normalizeSlug(this.code);
+  }
   next();
 });
 
 module.exports = mongoose.model('Product', productSchema);
-
 
 

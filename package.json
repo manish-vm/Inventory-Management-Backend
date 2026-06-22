@@ -9,7 +9,8 @@
     "seed": "node seedSuperAdmin.js && node seedPlans.js",
     "seed:admin": "node seedSuperAdmin.js",
     "seed:plans": "node seedPlans.js",
-    "seed:helmet-defects": "node seedHelmetDefectDetails.js"
+    "seed:mis": "node seedMISData.js",
+    "test": "node tests/reportClassification.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

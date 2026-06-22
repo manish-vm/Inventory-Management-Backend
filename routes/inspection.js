@@ -14,6 +14,10 @@ router.get('/employee/traceability/:id', inspectionController.getTraceability);
 router.get('/admin/responses', adminOnly, inspectionController.getAdminResponses);
 router.get('/admin/production-analytics', adminOnly, inspectionController.getProductionAnalytics);
 router.get('/admin/rejection-report', adminOnly, inspectionController.getRejectionReport);
+router.get('/admin/mis-dashboard', adminOnly, inspectionController.getMisDashboard);
+router.get('/admin/mis-dashboard/taxonomy', adminOnly, inspectionController.getMisTaxonomy);
+router.post('/admin/mis-dashboard/backfill', adminOnly, inspectionController.backfillMisClassification);
+router.post('/admin/mis-dashboard/sync-taxonomy', adminOnly, inspectionController.syncMisTaxonomy);
 router.get('/admin/responses/:id', adminOnly, inspectionController.getResponseById);
 router.get('/admin/traceability/:id', adminOnly, inspectionController.getTraceability);
 

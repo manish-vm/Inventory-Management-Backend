@@ -6,6 +6,7 @@ const ProductItem = require('../models/ProductItem');
 const StageMovementLog = require('../models/StageMovementLog');
 const ProcessingStage = require('../models/ProcessingStage');
 const ProductStage = require('../models/ProductStage');
+const ManufacturingConfig = require('../models/ManufacturingConfig');
 const Role = require('../models/Role');
 const mongoose = require('mongoose');
 const {
@@ -14,6 +15,12 @@ const {
   getStageByNumber,
   resolveProductContext
 } = require('../services/inspectionService');
+const {
+  getInspectionClassification,
+  normalizeReportText,
+  reportIdFor,
+  toKey
+} = require('../utils/reportClassification');
 
 const todayRange = () => {
   const start = new Date();
@@ -231,6 +238,12 @@ const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, produ
       return {
         stageNumber: stage.stageNumber,
         stageName: stage.stageName,
+        productionLine: stage.productionLine || '',
+        reportType: stage.reportType || '',
+        processKey: stage.processKey || '',
+        processName: stage.processName || stage.stageName || '',
+        partKey: stage.partKey || '',
+        partName: stage.partName || '',
         stageType: stage.stageType,
         isCurrent,
         isAssigned,
@@ -633,6 +646,12 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       code,
       batchNo = '',
       productName = '',
+      productionLine = '',
+      reportType = '',
+      processKey = '',
+      processName = '',
+      partKey = '',
+      partName = '',
       stageId,
       stageName = '',
       acceptedCount,
@@ -778,6 +797,18 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
     if (!isOpenIntakeStage && total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
     const stage = getStageByNumber(stages, stageNumber);
+    const reportClassification = getInspectionClassification({
+      productionLine,
+      reportType,
+      processKey,
+      processName,
+      partKey,
+      partName,
+      productName: productName || product?.productName || code,
+      code,
+      partDescription: product?.description || product?.productName || '',
+      stageName: stageName || stage?.stageName || `Stage ${stageNumber}`
+    });
 
     // Update ProductStage counters based on submitted counts.
     // Keep QR logic only for trace/movement; ProductStage becomes source of truth for stage review stats.
@@ -872,6 +903,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       code,
       batchNo,
       partDescription: product?.description || product?.productName || '',
+      ...reportClassification,
       stageNumber,
       stageName: stageName || stage?.stageName || `Stage ${stageNumber}`,
       status: counts.rejected > 0 ? 'REJECTED' : counts.rework > 0 ? 'REWORK' : 'ACCEPTED',
@@ -898,6 +930,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       code,
       batchNo,
       partDescription: product?.description || product?.productName || '',
+      ...reportClassification,
       stageNumber,
       stageName: stageName || stage?.stageName || `Stage ${stageNumber}`,
       formId: `stage-${stageNumber}`,
@@ -1170,6 +1203,14 @@ exports.submitInspection = async (req, res) => {
     const { product, stages } = await resolveProductContext(qrCode.code);
     const currentStageNumber = qrCode.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
+    const reportClassification = getInspectionClassification({
+      ...currentStage,
+      productName: product?.productName || qrCode.code,
+      code: qrCode.code,
+      partDescription: product?.description || product?.productName || '',
+      stageName: currentStage.stageName,
+      formName
+    });
     const currentIndex = stages.findIndex((stage) => Number(stage.stageNumber) === Number(currentStage.stageNumber));
     const access = validateEmployeeStageAccess({ employee: req.user, currentStage, stages });
 
@@ -1266,6 +1307,7 @@ exports.submitInspection = async (req, res) => {
       code: qrCode.code,
       batchNo: qrCode.batchNo || '',
       partDescription: product?.description || product?.productName || '',
+      ...reportClassification,
       stageNumber: currentStage.stageNumber,
       stageName: currentStage.stageName,
       formId: formId || `stage-${currentStage.stageNumber}`,
@@ -1805,4 +1847,294 @@ exports.getRejectionReport = async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+};
+
+exports.getMisDashboard = async (req, res) => {
+  try {
+    const now = new Date();
+    const month = Math.min(Math.max(Number(req.query.month) || now.getMonth() + 1, 1), 12);
+    const year = Number(req.query.year) || now.getFullYear();
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const responses = await InspectionFormResponse.find({
+      submittedAt: { $gte: start, $lt: end }
+    })
+      .select([
+        'productName', 'code', 'partDescription', 'productionLine', 'reportType',
+        'processKey', 'processName', 'partKey', 'partName', 'stageName', 'formName',
+        'acceptedCount', 'rejectedCount', 'reworkCount', 'responses',
+        'rejectionFormResponses', 'reworkFormResponses', 'submittedAt'
+      ].join(' '))
+      .lean();
+
+    const makeDays = () => Array.from({ length: daysInMonth }, (_, index) => ({
+      day: index + 1,
+      accepted: 0,
+      rejected: 0,
+      rework: 0,
+      output: 0,
+      rejection: 0,
+      rejectionAndRework: 0,
+      rejectionPercent: 0,
+      rejectionAndReworkPercent: 0
+    }));
+    const reports = {};
+
+    const ensureReport = (reportId, classification) => {
+      if (!reports[reportId]) {
+        reports[reportId] = {
+          reportId,
+          productionLine: classification.productionLine,
+          reportType: classification.reportType,
+          processKey: classification.processKey,
+          processName: classification.processName,
+          partKey: classification.partKey,
+          partName: classification.partName,
+          days: makeDays(),
+          totals: {
+            accepted: 0,
+            rejected: 0,
+            rework: 0,
+            output: 0,
+            rejection: 0,
+            rejectionAndRework: 0,
+            rejectionPercent: 0,
+            rejectionAndReworkPercent: 0
+          },
+          rows: {}
+        };
+      }
+      return reports[reportId];
+    };
+
+    const getCountAnswers = (answers = []) => (answers || [])
+      .filter((answer) => normalizeReportText(answer?.type) === 'count')
+      .map((answer) => ({
+        key: toKey(answer?.defectDetail || answer?.optionKey || answer?.question || answer?.questionId || 'unspecified'),
+        name: String(answer?.defectDetail || answer?.optionKey || answer?.question || 'Unspecified').trim(),
+        count: toCount(answer?.answer)
+      }))
+      .filter((answer) => answer.count > 0);
+
+    const addDefects = (report, answers, dayIndex) => {
+      for (const answer of answers) {
+        if (!report.rows[answer.key]) {
+          report.rows[answer.key] = {
+            defectCode: answer.key,
+            defectName: answer.name,
+            days: Array(daysInMonth).fill(0),
+            total: 0
+          };
+        }
+        report.rows[answer.key].days[dayIndex] += answer.count;
+        report.rows[answer.key].total += answer.count;
+      }
+    };
+
+    for (const response of responses) {
+      const classification = getInspectionClassification(response);
+      if (!classification.productionLine || !classification.reportType) continue;
+
+      const primaryReportId = reportIdFor(classification.productionLine, classification.reportType);
+      if (!primaryReportId) continue;
+
+      const reportIds = [primaryReportId];
+      if (classification.reportType === 'helmet-assembly') {
+        const line = normalizeReportText(classification.productionLine);
+        reportIds.push(`${line}-helmet-assembly-rejection`);
+        reportIds.push(`stagewise-rejection-performance-${line}`);
+      }
+
+      const accepted = toCount(response.acceptedCount);
+      const rejected = toCount(response.rejectedCount);
+      const rework = toCount(response.reworkCount);
+      const output = accepted + rejected + rework;
+      const dayIndex = Math.max(0, Math.min(daysInMonth - 1, new Date(response.submittedAt).getDate() - 1));
+      const inspectionDefects = getCountAnswers(response.responses);
+      const rejectionDefects = getCountAnswers(response.rejectionFormResponses);
+      const reworkDefects = getCountAnswers(response.reworkFormResponses);
+
+      for (const reportId of reportIds) {
+        const report = ensureReport(reportId, classification);
+        const day = report.days[dayIndex];
+        day.accepted += accepted;
+        day.rejected += rejected;
+        day.rework += rework;
+        day.output += output;
+        day.rejection += rejected;
+        day.rejectionAndRework += rejected + rework;
+
+        report.totals.accepted += accepted;
+        report.totals.rejected += rejected;
+        report.totals.rework += rework;
+        report.totals.output += output;
+        report.totals.rejection += rejected;
+        report.totals.rejectionAndRework += rejected + rework;
+
+        const isRejectionReport = reportId.endsWith('-helmet-assembly-rejection');
+        addDefects(
+          report,
+          isRejectionReport ? rejectionDefects : [...inspectionDefects, ...rejectionDefects, ...reworkDefects],
+          dayIndex
+        );
+      }
+    }
+
+    for (const report of Object.values(reports)) {
+      for (const day of report.days) {
+        day.rejectionPercent = day.output ? Number(((day.rejection / day.output) * 100).toFixed(2)) : 0;
+        day.rejectionAndReworkPercent = day.output
+          ? Number(((day.rejectionAndRework / day.output) * 100).toFixed(2))
+          : 0;
+      }
+      report.totals.rejectionPercent = report.totals.output
+        ? Number(((report.totals.rejection / report.totals.output) * 100).toFixed(2))
+        : 0;
+      report.totals.rejectionAndReworkPercent = report.totals.output
+        ? Number(((report.totals.rejectionAndRework / report.totals.output) * 100).toFixed(2))
+        : 0;
+      report.rows = Object.values(report.rows).sort((a, b) =>
+        b.total - a.total || a.defectName.localeCompare(b.defectName)
+      );
+    }
+
+    res.json({ month, year, daysInMonth, reports });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.backfillMisClassification = async (req, res) => {
+  try {
+    const query = {
+      $or: [
+        { productionLine: { $exists: false } },
+        { productionLine: '' },
+        { reportType: { $exists: false } },
+        { reportType: '' }
+      ]
+    };
+    const responses = await InspectionFormResponse.find(query)
+      .select('productName code partDescription stageName formName productionLine reportType processKey processName partKey partName')
+      .lean();
+
+    const operations = responses
+      .map((response) => ({
+        response,
+        classification: getInspectionClassification(response)
+      }))
+      .filter(({ classification }) => classification.productionLine && classification.reportType)
+      .map(({ response, classification }) => ({
+        updateOne: {
+          filter: { _id: response._id },
+          update: { $set: classification }
+        }
+      }));
+
+    if (operations.length) {
+      await InspectionFormResponse.bulkWrite(operations, { ordered: false });
+    }
+
+    res.json({
+      scanned: responses.length,
+      updated: operations.length,
+      skipped: responses.length - operations.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.syncMisTaxonomy = async (req, res) => {
+  try {
+    const configs = await ManufacturingConfig.find({});
+    let configsUpdated = 0;
+    let stagesUpdated = 0;
+    let stagesSkipped = 0;
+
+    for (const config of configs) {
+      let changed = false;
+      config.stages = config.stages.map((stage) => {
+        const classification = getInspectionClassification({
+          ...stage.toObject(),
+          productName: config.productName,
+          stageName: stage.stageName,
+          processName: stage.processName || stage.stageName,
+          partName: stage.partName || config.productName
+        });
+        if (!classification.productionLine || !classification.reportType) {
+          stagesSkipped += 1;
+          return stage;
+        }
+        const current = stage.toObject();
+        const differs = Object.entries(classification).some(([key, value]) => String(current[key] || '') !== String(value || ''));
+        if (!differs) return stage;
+        changed = true;
+        stagesUpdated += 1;
+        return { ...current, ...classification };
+      });
+      if (changed) {
+        await config.save();
+        configsUpdated += 1;
+      }
+    }
+
+    const responseQuery = {
+      $or: [
+        { productionLine: { $exists: false } },
+        { productionLine: '' },
+        { reportType: { $exists: false } },
+        { reportType: '' }
+      ]
+    };
+    const responses = await InspectionFormResponse.find(responseQuery)
+      .select('productName code partDescription stageName formName productionLine reportType processKey processName partKey partName')
+      .lean();
+    const responseOperations = responses
+      .map((response) => ({
+        response,
+        classification: getInspectionClassification(response)
+      }))
+      .filter(({ classification }) => classification.productionLine && classification.reportType)
+      .map(({ response, classification }) => ({
+        updateOne: {
+          filter: { _id: response._id },
+          update: { $set: classification }
+        }
+      }));
+    if (responseOperations.length) {
+      await InspectionFormResponse.bulkWrite(responseOperations, { ordered: false });
+    }
+
+    res.json({
+      configsScanned: configs.length,
+      configsUpdated,
+      stagesUpdated,
+      stagesSkipped,
+      responsesScanned: responses.length,
+      responsesUpdated: responseOperations.length,
+      responsesSkipped: responses.length - responseOperations.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getMisTaxonomy = async (req, res) => {
+  res.json({
+    productionLines: ['D1', 'D2', 'D3', 'D4'],
+    reportTypes: [
+      { value: 'helmet-assembly', label: 'Helmet Assembly' },
+      { value: 'visor-moulding', label: 'Visor Moulding' },
+      { value: 'visor-mechanism-top-moulding', label: 'Visor Mechanism Top Moulding' },
+      { value: 'visor-coating', label: 'Visor Coating' },
+      { value: 'shell-moulding', label: 'Shell Moulding' },
+      { value: 'chin-cover-moulding', label: 'Chin Cover Moulding' },
+      { value: 'spoiler-moulding', label: 'Spoiler Moulding' },
+      { value: 'stagewise-rejection', label: 'Stagewise Rejection' },
+      { value: 'bop-parts-receipt', label: 'BOP Parts Receipt' }
+    ]
+  });
 };
