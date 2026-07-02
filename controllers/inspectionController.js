@@ -2037,6 +2037,8 @@ exports.getMisDashboard = async (req, res) => {
 
       const reportIds = [primaryReportId, dynamicReportId].filter(Boolean);
       if (dynamicReportId) {
+        reportIds.push(`${dynamicReportId}-mis`);
+        reportIds.push(`${dynamicReportId}-crs`);
         reportIds.push(`${dynamicReportId}-rejection`);
         reportIds.push(`${dynamicReportId}-rework`);
       }
@@ -2076,10 +2078,11 @@ exports.getMisDashboard = async (req, res) => {
         const isRejectionReport = reportId.endsWith('-helmet-assembly-rejection');
         const isReworkReport = reportId.endsWith('-helmet-assembly-rework');
         const isDynamicRejectionReport = reportId.endsWith('-rejection');
+        const isDynamicCrsReport = reportId.endsWith('-crs');
         const isDynamicReworkReport = reportId.endsWith('-rework');
         addDefects(
           report,
-          isRejectionReport || isDynamicRejectionReport
+          isRejectionReport || isDynamicRejectionReport || isDynamicCrsReport
             ? rejectionDefects
             : isReworkReport || isDynamicReworkReport
               ? reworkDefects
