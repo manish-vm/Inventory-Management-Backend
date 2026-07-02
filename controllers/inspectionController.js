@@ -1927,7 +1927,8 @@ exports.getMisDashboard = async (req, res) => {
             rejectionPercent: 0,
             rejectionAndReworkPercent: 0
           },
-          rows: {}
+          rows: {},
+          processRows: {}
         };
       }
       return reports[reportId];
@@ -1943,7 +1944,7 @@ exports.getMisDashboard = async (req, res) => {
       const answerQuestionId = String(answer?.questionId || '').trim();
       const answerOptionKey = String(answer?.optionKey || '').trim();
 
-      const findNestedQuestion = (rootQuestion, parentOption, nestedQuestions = []) => {
+      const findNestedQuestion = (rootQuestion, parentOption, nestedQuestions = [], path = []) => {
         for (const nestedQuestion of nestedQuestions || []) {
           const nestedQuestionText = String(nestedQuestion?.questionText || nestedQuestion?.label || nestedQuestion?.question || '').trim();
           const nestedQuestionId = String(nestedQuestion?.questionId || nestedQuestion?.id || '').trim();
@@ -1951,31 +1952,38 @@ exports.getMisDashboard = async (req, res) => {
             const nestedOptionLabel = String(nestedOption?.label || nestedOption?.value || '').trim();
             const nestedOptionId = String(nestedOption?.optionId || nestedOption?.id || '').trim();
             const nestedOptionMatches = answerOptionKey && [nestedOptionId, nestedOptionLabel].includes(answerOptionKey);
+            const nextPath = nestedQuestionText && (nestedOptionLabel || answerOptionKey)
+              ? [...path, { question: nestedQuestionText, option: nestedOptionLabel || answerOptionKey }]
+              : path;
             if (nestedQuestionId === answerQuestionId && nestedOptionMatches) {
               return {
                 rootQuestion,
                 parentOption,
                 subQuestion: nestedQuestionText,
                 subOption: nestedOptionLabel || answerOptionKey,
+                subQuestionPath: nextPath,
                 defectName: nestedOptionLabel || answerOptionKey,
                 hasSubQuestion: true
               };
             }
-            const deeperMatch = findNestedQuestion(rootQuestion, parentOption, nestedOption?.subQuestions || []);
+            const deeperMatch = findNestedQuestion(rootQuestion, parentOption, nestedOption?.subQuestions || [], nextPath);
             if (deeperMatch) {
               return {
                 ...deeperMatch,
                 subQuestion: deeperMatch.subQuestion || nestedQuestionText,
-                subOption: deeperMatch.subOption || nestedOptionLabel || answerOptionKey
+                subOption: deeperMatch.subOption || nestedOptionLabel || answerOptionKey,
+                subQuestionPath: deeperMatch.subQuestionPath?.length ? deeperMatch.subQuestionPath : nextPath
               };
             }
           }
           if (nestedQuestionId === answerQuestionId) {
+            const currentOption = String(answer?.subOption || '').trim();
             return {
               rootQuestion,
               parentOption,
               subQuestion: nestedQuestionText,
-              subOption: answer?.subOption || '',
+              subOption: currentOption,
+              subQuestionPath: nestedQuestionText && currentOption ? [...path, { question: nestedQuestionText, option: currentOption }] : path,
               defectName: String(answer?.defectDetail || answer?.defectType || nestedQuestionText).trim(),
               hasSubQuestion: true
             };
@@ -2016,6 +2024,11 @@ exports.getMisDashboard = async (req, res) => {
         const parentOption = String(currentLabels.parentOption || answer?.parentOption || answer?.optionKey || 'Unspecified').trim();
         const subQuestion = String(currentLabels.subQuestion || answer?.subQuestion || '').trim();
         const subOption = String(currentLabels.subOption || answer?.subOption || '').trim();
+        const subQuestionPath = Array.isArray(currentLabels.subQuestionPath) && currentLabels.subQuestionPath.length
+          ? currentLabels.subQuestionPath
+          : subQuestion && subOption
+            ? [{ question: subQuestion, option: subOption }]
+            : [];
         const defectName = String(currentLabels.defectName || answer?.defectDetail || answer?.defectType || answer?.question || 'Unspecified').trim();
         const hasSubQuestion = currentLabels.hasSubQuestion ?? (
           Boolean(answer?.rootQuestion || answer?.parentOption || answer?.subQuestion || answer?.subOption)
@@ -2030,6 +2043,7 @@ exports.getMisDashboard = async (req, res) => {
           questionAnswer: parentOption,
           subQuestion,
           subOption,
+          subQuestionPath,
           name: defectName,
           hasSubQuestion,
           processName,
@@ -2048,6 +2062,7 @@ exports.getMisDashboard = async (req, res) => {
             questionAnswer: answer.questionAnswer || '',
             subQuestion: answer.subQuestion || '',
             subOption: answer.subOption || '',
+            subQuestionPath: answer.subQuestionPath || [],
             hasSubQuestion: Boolean(answer.hasSubQuestion),
             defectName: answer.name,
             assemblyProcess: answer.processName || '',
@@ -2059,6 +2074,26 @@ exports.getMisDashboard = async (req, res) => {
         report.rows[answer.key].days[dayIndex] += answer.count;
         report.rows[answer.key].total += answer.count;
       }
+    };
+
+    const addProcessOutput = (report, response, dayIndex, output, rejection) => {
+      const partName = String(response?.productName || response?.partName || report.partName || 'Unspecified').trim();
+      const processName = String(response?.processName || response?.stageName || report.processName || 'Unspecified').trim();
+      const key = toKey(`${partName} ${processName}`);
+      if (!report.processRows[key]) {
+        report.processRows[key] = {
+          key,
+          partName,
+          processName,
+          days: Array.from({ length: daysInMonth }, () => ({ output: 0, rejection: 0 })),
+          totalOutput: 0,
+          totalRejection: 0
+        };
+      }
+      report.processRows[key].days[dayIndex].output += output;
+      report.processRows[key].days[dayIndex].rejection += rejection;
+      report.processRows[key].totalOutput += output;
+      report.processRows[key].totalRejection += rejection;
     };
 
     for (const response of responses) {
@@ -2115,6 +2150,7 @@ exports.getMisDashboard = async (req, res) => {
         report.totals.output += output;
         report.totals.rejection += rejected;
         report.totals.rejectionAndRework += rejected + rework;
+        addProcessOutput(report, response, dayIndex, output, rejected);
 
         const isRejectionReport = reportId.endsWith('-helmet-assembly-rejection');
         const isReworkReport = reportId.endsWith('-helmet-assembly-rework');
@@ -2148,6 +2184,9 @@ exports.getMisDashboard = async (req, res) => {
         : 0;
       report.rows = Object.values(report.rows).sort((a, b) =>
         b.total - a.total || a.defectName.localeCompare(b.defectName)
+      );
+      report.processRows = Object.values(report.processRows).sort((a, b) =>
+        a.partName.localeCompare(b.partName) || a.processName.localeCompare(b.processName)
       );
     }
 

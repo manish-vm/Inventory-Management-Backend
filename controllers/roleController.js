@@ -71,12 +71,12 @@ const buildPermissionTree = async (user) => {
 
   return [...categories.values()].map((category) => ({
     ...category,
-    subcategories: category.subcategories.sort((a, b) => {
+    subcategories: category.subcategories.filter((subcategory) => subcategory.products.length > 0).sort((a, b) => {
       if (a.id === null) return 1;
       if (b.id === null) return -1;
       return a.name.localeCompare(b.name);
     })
-  })).sort((a, b) => a.name.localeCompare(b.name));
+  })).filter((category) => category.subcategories.length > 0).sort((a, b) => a.name.localeCompare(b.name));
 };
 
 const normalizePayload = async (body, user) => {

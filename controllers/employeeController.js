@@ -28,10 +28,14 @@ const stagesFromRole = (role) => {
 exports.createEmployee = async (req, res) => {
   try {
     const { password, assignedRole, ...employeeData } = req.body;
-    if (!assignedRole) return res.status(400).json({ message: 'Select a role for the employee' });
-    const role = await findScopedRole(assignedRole, req.user);
-    if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
-    const assignedStages = stagesFromRole(role);
+    let role = null;
+    let assignedStages = [];
+
+    if (assignedRole) {
+      role = await findScopedRole(assignedRole, req.user);
+      if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
+      assignedStages = stagesFromRole(role);
+    }
     
     // Ensure employee belongs to admin's dealer
     employeeData.dealerId = req.user.dealerId;
@@ -47,7 +51,7 @@ exports.createEmployee = async (req, res) => {
       dealerId: req.user.dealerId,
       manufacturingLevel: assignedStages[0]?.stageNumber || 1,
       assignedStages,
-      assignedRole: role._id,
+      assignedRole: role?._id || null,
       isActive: true
     });
 
@@ -88,13 +92,18 @@ exports.updateEmployee = async (req, res) => {
     if (address) employee.address = address;
     if (isActive !== undefined) employee.isActive = isActive;
     if (assignedRole !== undefined) {
-      if (!assignedRole) return res.status(400).json({ message: 'Select a role for the employee' });
-      const role = await findScopedRole(assignedRole, req.user);
-      if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
-      const assignedStages = stagesFromRole(role);
-      employee.assignedRole = role._id;
-      employee.assignedStages = assignedStages;
-      employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
+      if (!assignedRole) {
+        employee.assignedRole = null;
+        employee.assignedStages = [];
+        employee.manufacturingLevel = 1;
+      } else {
+        const role = await findScopedRole(assignedRole, req.user);
+        if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
+        const assignedStages = stagesFromRole(role);
+        employee.assignedRole = role._id;
+        employee.assignedStages = assignedStages;
+        employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
+      }
     }
     if (password) employee.password = password;
 
@@ -319,5 +328,3 @@ exports.getEmployeeProfile = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
-
-
