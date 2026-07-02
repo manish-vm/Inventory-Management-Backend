@@ -12,17 +12,43 @@ const defaultStages = [
   }
 ];
 
-const normalizeStages = (stages, productName = '') => {
+const productContextFromProduct = (product) => {
+  const categoryName = product?.category?.name || '';
+  const subcategoryName = product?.subcategory?.name || '';
+
+  return {
+    productName: product?.productName || product?.description || '',
+    categoryName,
+    subcategoryName,
+    processName: [categoryName, subcategoryName].filter(Boolean).join(' - '),
+    productionLine: getInspectionClassification({
+      productName: subcategoryName || product?.productName,
+      stageName: subcategoryName
+    }).productionLine,
+    reportType: getInspectionClassification({
+      productName: categoryName,
+      stageName: categoryName
+    }).reportType
+  };
+};
+
+const normalizeStages = (stages, productContext = {}) => {
   const sourceStages = Array.isArray(stages) && stages.length > 0 ? stages : defaultStages;
+  const productName = productContext.productName || '';
+  const processName = productContext.processName
+    || [productContext.categoryName, productContext.subcategoryName].filter(Boolean).join(' - ');
 
   return sourceStages.map((stage, index) => {
     const stageName = String(stage.stageName || `Stage ${index + 1}`).trim();
     const classification = getInspectionClassification({
       ...stage,
+      productionLine: productContext.productionLine || stage.productionLine,
+      reportType: productContext.reportType || stage.reportType,
       productName,
+      partDescription: productContext.categoryName,
       stageName,
-      processName: stage.processName || stageName,
-      partName: stage.partName || productName
+      processName,
+      partName: productName
     });
     return {
       stageNumber: index + 1,
@@ -119,7 +145,9 @@ exports.createManufacturingConfig = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const product = await Product.findOne({ productName });
+    const product = await Product.findOne({ productName })
+      .populate('category', 'name')
+      .populate('subcategory', 'name');
     if (!product) {
       return res.status(404).json({ message: 'Product not found for given productName' });
     }
@@ -129,7 +157,7 @@ exports.createManufacturingConfig = async (req, res) => {
       return res.status(400).json({ message: 'Configuration already exists for this productName' });
     }
 
-    const normalizedStages = normalizeStages(stages, productName);
+    const normalizedStages = normalizeStages(stages, productContextFromProduct(product));
 
     const config = new ManufacturingConfig({
       productName: productName || product.productName || product.description,
@@ -152,12 +180,16 @@ exports.updateManufacturingConfig = async (req, res) => {
     }
 
     const { productName, workflowType, stages, isActive } = req.body;
+    let productContext = null;
 
     if (productName !== undefined && productName !== config.productName) {
-      const product = await Product.findOne({ productName });
+      const product = await Product.findOne({ productName })
+        .populate('category', 'name')
+        .populate('subcategory', 'name');
       if (!product) {
         return res.status(404).json({ message: 'Product not found for given productName' });
       }
+      productContext = productContextFromProduct(product);
 
       const existingConfig = await ManufacturingConfig.findOne({
         productName,
@@ -171,7 +203,13 @@ exports.updateManufacturingConfig = async (req, res) => {
     }
 
     if (stages) {
-      const normalizedStages = normalizeStages(stages, productName || config.productName);
+      if (!productContext) {
+        const product = await Product.findOne({ productName: productName || config.productName })
+          .populate('category', 'name')
+          .populate('subcategory', 'name');
+        productContext = product ? productContextFromProduct(product) : { productName: productName || config.productName };
+      }
+      const normalizedStages = normalizeStages(stages, productContext);
       config.stages = normalizedStages;
       config.workflowType = getWorkflowType(normalizedStages);
     } else if (workflowType) {
@@ -305,4 +343,3 @@ exports.validateStageSequence = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-

@@ -6,7 +6,11 @@ const inspectionAnswerSchema = new mongoose.Schema({
   type: String,
   answer: mongoose.Schema.Types.Mixed,
   optionKey: String,
-  defectDetail: String
+  rootQuestion: String,
+  parentOption: String,
+  defectDetail: String,
+  assemblyProcess: String,
+  defectType: String
 }, { _id: false });
 
 const inspectionFormResponseSchema = new mongoose.Schema({

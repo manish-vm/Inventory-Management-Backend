@@ -19,14 +19,16 @@ const subcategorySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 subcategorySchema.pre('save', function(next) {
-  if (!this.slug) this.slug = makeSlug(this.name);
+  if (!this.slug) this.slug = makeSlug(`${this.category || ''}-${this.name}`);
   next();
 });
 
 subcategorySchema.pre('findOneAndUpdate', function(next) {
   const update = this.getUpdate() || {};
   const values = update.$set || update;
-  if (values.name && !values.slug) values.slug = makeSlug(values.name);
+  if ((values.name || values.category) && !values.slug) {
+    values.slug = makeSlug(`${values.category || ''}-${values.name || ''}`);
+  }
   if (update.$set) update.$set = values;
   this.setUpdate(update);
   next();

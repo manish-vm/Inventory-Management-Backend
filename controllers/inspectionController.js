@@ -168,8 +168,19 @@ const getEmployeeRolePermission = async (employee, productId) => {
 const getEmployeeAssignedProductIds = async (employee) => {
   if (employee?.role !== 'employee') return null;
   if (!employee.assignedRole) return [];
-  const role = await Role.findById(employee.assignedRole).select('products').lean();
-  return role?.products || [];
+  const role = await Role.findById(employee.assignedRole).select('products permissions').lean();
+  if (!role) return [];
+
+  const productIds = new Set((role.products || []).map(String));
+  (role.permissions || []).forEach((category) => {
+    (category.subcategories || []).forEach((subcategory) => {
+      (subcategory.products || []).forEach((product) => {
+        if (product.productId) productIds.add(String(product.productId));
+      });
+    });
+  });
+
+  return Array.from(productIds);
 };
 
 const getCurrentQrForCodes = async (codes = []) => {
@@ -373,15 +384,12 @@ exports.searchProductsForEmployee = async (req, res) => {
   try {
     const { q = '' } = req.query;
     const term = String(q).trim();
-    const role = req.user?.role === 'employee' && req.user.assignedRole
-      ? await Role.findById(req.user.assignedRole).select('products').lean()
-      : null;
-    const assignedProductIds = role?.products || [];
+    const assignedProductIds = await getEmployeeAssignedProductIds(req.user);
     if (req.user?.role === 'employee' && assignedProductIds.length === 0) return res.json([]);
 
     // If employee searches by product name, we must return product-level entry
     // and show overall total QR count under that product.
-    const productFilter = req.user?.role === 'employee' ? { _id: { $in: assignedProductIds } } : {};
+    const productFilter = assignedProductIds === null ? {} : { _id: { $in: assignedProductIds } };
     const productRows = await Product.find(
       term
         ? { ...productFilter,
@@ -697,7 +705,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       const selectedByQuestion = {};
       const countsByQuestionOption = {};
       const freeFormCountsByQuestion = {};
-      const missingDefectDetails = [];
+      const missingReasonDetails = [];
 
       for (const r of responses || []) {
         const qKey = String(r?.questionId || r?.question || 'unknown');
@@ -708,8 +716,8 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           if (!optionKey) continue;
           const countVal = Math.max(0, Number(r?.answer) || 0);
           if (optionKey === '__response__') {
-            if (countVal > 0 && !String(r?.defectDetail || '').trim()) {
-              missingDefectDetails.push({
+            if (countVal > 0 && !String(r?.defectDetail || r?.question || '').trim()) {
+              missingReasonDetails.push({
                 question: r?.question || qKey,
                 optionKey
               });
@@ -720,7 +728,9 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           if (!countsByQuestionOption[qKey]) countsByQuestionOption[qKey] = {};
           countsByQuestionOption[qKey][optionKey] = {
             count: countVal,
-            defectDetail: String(r?.defectDetail || '').trim()
+            defectDetail: String(r?.defectDetail || r?.defectType || r?.question || '').trim(),
+            assemblyProcess: String(r?.assemblyProcess || '').trim(),
+            defectType: String(r?.defectType || r?.defectDetail || r?.question || '').trim()
           };
           continue;
         }
@@ -739,7 +749,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
           const countEntry = countsForQ[opt] || {};
           const c = Math.max(0, Number(countEntry.count) || 0);
           if (c > 0 && !countEntry.defectDetail) {
-            missingDefectDetails.push({
+            missingReasonDetails.push({
               question: qKey,
               optionKey: opt
             });
@@ -756,7 +766,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         perQuestion[qKey] = (perQuestion[qKey] || 0) + c;
       }
 
-      return { overall, perQuestion, missingDefectDetails };
+      return { overall, perQuestion, missingReasonDetails };
     };
 
     const derivedRejected = deriveChoiceCountsFromResponses(rejectionFormResponses);
@@ -768,11 +778,11 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       rework: derivedRework.overall || toCount(reworkCount)
     };
 
-    if (derivedRejected.missingDefectDetails.length) {
-      return res.status(400).json({ message: 'Select a reject defect type for every counted option' });
+    if (derivedRejected.missingReasonDetails.length) {
+      return res.status(400).json({ message: 'Enter a reject count for the selected reason details' });
     }
-    if (derivedRework.missingDefectDetails.length) {
-      return res.status(400).json({ message: 'Select a rework defect type for every counted option' });
+    if (derivedRework.missingReasonDetails.length) {
+      return res.status(400).json({ message: 'Enter a rework count for the selected reason details' });
     }
 
     const total = counts.accepted + counts.rejected + counts.rework;
@@ -1863,7 +1873,7 @@ exports.getMisDashboard = async (req, res) => {
     })
       .select([
         'productName', 'code', 'partDescription', 'productionLine', 'reportType',
-        'processKey', 'processName', 'partKey', 'partName', 'stageName', 'formName',
+        'processKey', 'processName', 'partKey', 'partName', 'stageNumber', 'stageName', 'formName',
         'acceptedCount', 'rejectedCount', 'reworkCount', 'responses',
         'rejectionFormResponses', 'reworkFormResponses', 'submittedAt'
       ].join(' '))
@@ -1881,6 +1891,18 @@ exports.getMisDashboard = async (req, res) => {
       rejectionAndReworkPercent: 0
     }));
     const reports = {};
+    const productCodes = [...new Set(responses.map((response) => response.code).filter(Boolean))];
+    const productsByCode = new Map((await Product.find({ code: { $in: productCodes } })
+      .select('code productName category subcategory')
+      .populate('category', 'name')
+      .populate('subcategory', 'name category')
+      .lean()).map((product) => [product.code, product]));
+    const responseProductNames = [
+      ...new Set(responses.map((response) => response.productName).filter(Boolean))
+    ];
+    const configsByProductName = new Map((await ManufacturingConfig.find({
+      productName: { $in: responseProductNames }
+    }).lean()).map((config) => [normalizeReportText(config.productName), config]));
 
     const ensureReport = (reportId, classification) => {
       if (!reports[reportId]) {
@@ -1909,13 +1931,73 @@ exports.getMisDashboard = async (req, res) => {
       return reports[reportId];
     };
 
-    const getCountAnswers = (answers = []) => (answers || [])
+    const resolveQuestionnaireLabels = (response, answer, type) => {
+      const config = configsByProductName.get(normalizeReportText(response?.productName));
+      const stage = (config?.stages || []).find((item) => Number(item.stageNumber) === Number(response?.stageNumber));
+      const formDefinition = type === 'rework'
+        ? stage?.reviewForm?.reworkForm
+        : stage?.reviewForm?.rejectionForm;
+      const questions = formDefinition?.questions || [];
+      const answerQuestionId = String(answer?.questionId || '').trim();
+      const answerOptionKey = String(answer?.optionKey || '').trim();
+
+      for (const question of questions) {
+        const rootQuestion = String(question?.questionText || question?.label || question?.question || '').trim();
+        for (const option of question?.options || []) {
+          const optionLabel = String(option?.label || option?.value || '').trim();
+          const optionId = String(option?.optionId || option?.id || '').trim();
+          const optionMatches = answerOptionKey && [optionId, optionLabel].includes(answerOptionKey);
+
+          if (String(question?.questionId || question?.id || '').trim() === answerQuestionId && optionMatches) {
+              return {
+                rootQuestion,
+                parentOption: optionLabel || answerOptionKey,
+                defectName: '',
+                hasSubQuestion: false
+              };
+          }
+
+          for (const subQuestion of option?.subQuestions || []) {
+            if (String(subQuestion?.questionId || subQuestion?.id || '').trim() === answerQuestionId) {
+              return {
+                rootQuestion,
+                parentOption: optionLabel || answer?.parentOption || answerOptionKey || 'Unspecified',
+                defectName: String(subQuestion?.questionText || subQuestion?.label || subQuestion?.question || '').trim(),
+                hasSubQuestion: true
+              };
+            }
+          }
+        }
+      }
+
+      return null;
+    };
+
+    const getCountAnswers = (answers = [], type, classification, response = {}) => (answers || [])
       .filter((answer) => normalizeReportText(answer?.type) === 'count')
-      .map((answer) => ({
-        key: toKey(answer?.defectDetail || answer?.optionKey || answer?.question || answer?.questionId || 'unspecified'),
-        name: String(answer?.defectDetail || answer?.optionKey || answer?.question || 'Unspecified').trim(),
-        count: toCount(answer?.answer)
-      }))
+      .map((answer) => {
+        const currentLabels = resolveQuestionnaireLabels(response, answer, type) || {};
+        const rootQuestion = String(currentLabels.rootQuestion || answer?.rootQuestion || answer?.question || (type === 'rework' ? 'Rework Reason' : 'Rejection Reason')).trim();
+        const parentOption = String(currentLabels.parentOption || answer?.parentOption || answer?.optionKey || 'Unspecified').trim();
+        const defectName = String(currentLabels.defectName || answer?.defectDetail || answer?.defectType || answer?.question || 'Unspecified').trim();
+        const hasSubQuestion = currentLabels.hasSubQuestion ?? (
+          Boolean(answer?.rootQuestion || answer?.parentOption)
+          && normalizeReportText(answer?.defectDetail || answer?.defectType || answer?.question)
+            !== normalizeReportText(answer?.parentOption || answer?.optionKey)
+        );
+        const processName = String(answer?.assemblyProcess || classification.processName || '').trim();
+        const partName = String(response?.productName || response?.partName || classification.partName || '').trim();
+        return {
+          key: toKey(`${rootQuestion} ${parentOption} ${partName} ${defectName}`),
+          questionHeader: rootQuestion,
+          questionAnswer: parentOption,
+          name: defectName,
+          hasSubQuestion,
+          processName,
+          partName,
+          count: toCount(answer?.answer)
+        };
+      })
       .filter((answer) => answer.count > 0);
 
     const addDefects = (report, answers, dayIndex) => {
@@ -1923,7 +2005,12 @@ exports.getMisDashboard = async (req, res) => {
         if (!report.rows[answer.key]) {
           report.rows[answer.key] = {
             defectCode: answer.key,
+            questionHeader: answer.questionHeader || '',
+            questionAnswer: answer.questionAnswer || '',
+            hasSubQuestion: Boolean(answer.hasSubQuestion),
             defectName: answer.name,
+            assemblyProcess: answer.processName || '',
+            partName: answer.partName || '',
             days: Array(daysInMonth).fill(0),
             total: 0
           };
@@ -1935,15 +2022,28 @@ exports.getMisDashboard = async (req, res) => {
 
     for (const response of responses) {
       const classification = getInspectionClassification(response);
-      if (!classification.productionLine || !classification.reportType) continue;
+      const product = productsByCode.get(response.code);
+      const categoryId = product?.category?._id ? String(product.category._id) : '';
+      const subcategoryId = product?.subcategory?._id ? String(product.subcategory._id) : '';
+      const dynamicReportId = subcategoryId
+        ? `product-subcategory-${subcategoryId}`
+        : categoryId
+          ? `product-category-${categoryId}-all`
+          : '';
+      const primaryReportId = classification.productionLine && classification.reportType
+        ? reportIdFor(classification.productionLine, classification.reportType)
+        : '';
+      if (!primaryReportId && !dynamicReportId) continue;
 
-      const primaryReportId = reportIdFor(classification.productionLine, classification.reportType);
-      if (!primaryReportId) continue;
-
-      const reportIds = [primaryReportId];
+      const reportIds = [primaryReportId, dynamicReportId].filter(Boolean);
+      if (dynamicReportId) {
+        reportIds.push(`${dynamicReportId}-rejection`);
+        reportIds.push(`${dynamicReportId}-rework`);
+      }
       if (classification.reportType === 'helmet-assembly') {
         const line = normalizeReportText(classification.productionLine);
         reportIds.push(`${line}-helmet-assembly-rejection`);
+        reportIds.push(`${line}-helmet-assembly-rework`);
         reportIds.push(`stagewise-rejection-performance-${line}`);
       }
 
@@ -1952,9 +2052,9 @@ exports.getMisDashboard = async (req, res) => {
       const rework = toCount(response.reworkCount);
       const output = accepted + rejected + rework;
       const dayIndex = Math.max(0, Math.min(daysInMonth - 1, new Date(response.submittedAt).getDate() - 1));
-      const inspectionDefects = getCountAnswers(response.responses);
-      const rejectionDefects = getCountAnswers(response.rejectionFormResponses);
-      const reworkDefects = getCountAnswers(response.reworkFormResponses);
+      const inspectionDefects = getCountAnswers(response.responses, 'reject', classification, response);
+      const rejectionDefects = getCountAnswers(response.rejectionFormResponses, 'reject', classification, response);
+      const reworkDefects = getCountAnswers(response.reworkFormResponses, 'rework', classification, response);
 
       for (const reportId of reportIds) {
         const report = ensureReport(reportId, classification);
@@ -1974,9 +2074,16 @@ exports.getMisDashboard = async (req, res) => {
         report.totals.rejectionAndRework += rejected + rework;
 
         const isRejectionReport = reportId.endsWith('-helmet-assembly-rejection');
+        const isReworkReport = reportId.endsWith('-helmet-assembly-rework');
+        const isDynamicRejectionReport = reportId.endsWith('-rejection');
+        const isDynamicReworkReport = reportId.endsWith('-rework');
         addDefects(
           report,
-          isRejectionReport ? rejectionDefects : [...inspectionDefects, ...rejectionDefects, ...reworkDefects],
+          isRejectionReport || isDynamicRejectionReport
+            ? rejectionDefects
+            : isReworkReport || isDynamicReworkReport
+              ? reworkDefects
+              : [...inspectionDefects, ...rejectionDefects, ...reworkDefects],
           dayIndex
         );
       }

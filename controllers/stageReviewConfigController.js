@@ -1,6 +1,7 @@
 const StageReviewConfig = require("../models/StageReviewConfig");
 const StageReviewSubmission = require("../models/StageReviewSubmission");
 const { getManufacturingStatsByCode } = require("../utils/manufacturingStats");
+const ManufacturingConfig = require("../models/ManufacturingConfig");
 
 const parseStageNumber = (stageId) => {
   // Accept stageId shapes like:
@@ -99,6 +100,46 @@ exports.getConfig = async (req, res) => {
   }
 };
 
+exports.getReportOptions = async (req, res) => {
+  try {
+    const { configId, stageNumber } = req.params;
+    const config = await ManufacturingConfig.findById(configId).lean();
+    if (!config) {
+      return res.status(404).json({ success: false, message: "Configuration not found" });
+    }
+
+    const stage = (config.stages || []).find((item) => Number(item.stageNumber) === Number(stageNumber));
+    if (!stage) {
+      return res.status(404).json({ success: false, message: "Stage not found" });
+    }
+
+    const questions = stage.reviewForm?.rejectionForm?.questions || [];
+    const groups = [];
+    const seen = new Set();
+
+    for (const question of questions) {
+      for (const option of question.options || []) {
+        const assemblyProcess = option.assemblyProcess || option.label || option.value || "";
+        const key = assemblyProcess.trim().toLowerCase();
+        if (!assemblyProcess || seen.has(key)) continue;
+        seen.add(key);
+        const defects = [];
+        for (const subQuestion of option.subQuestions || []) {
+          for (const defectOption of subQuestion.options || []) {
+            const defectType = defectOption.defectType || defectOption.label || defectOption.value || "";
+            if (defectType && !defects.includes(defectType)) defects.push(defectType);
+          }
+        }
+        groups.push({ assemblyProcess, defects });
+      }
+    }
+
+    res.status(200).json({ success: true, data: groups });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.submitReview = async (req, res) => {
   try {
     const submission = await StageReviewSubmission.create(req.body);
@@ -194,6 +235,5 @@ exports.getAnalytics = async (req, res) => {
     });
   }
 };
-
 
 

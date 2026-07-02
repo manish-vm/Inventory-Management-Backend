@@ -15,10 +15,6 @@ router.get('/code/:code', auth, authAndEmployee, productsController.getProductBy
 // @desc    Get all low stock products
 router.get('/low-stock/all', auth, authAndEmployee, productsController.getLowStockProducts);
 
-// @route   GET /api/products/:id
-// @desc    Get single product by ID
-router.get('/:id', auth, authAndEmployee, productsController.getProductById);
-
 // @route   POST /api/products
 // @desc    Create new product (Admin only)
 router.post('/', auth, adminOnly, productsController.createProduct);
@@ -73,7 +69,10 @@ router.delete('/subcategories/:id', auth, adminOnly, productsController.deleteSu
 // @desc    Get product analytics popup data
 router.get('/:id/analytics', auth, authAndEmployee, productsController.getProductAnalytics);
 
-module.exports = router;
+// @route   GET /api/products/:id
+// @desc    Get single product by ID
+router.get('/:id', auth, authAndEmployee, productsController.getProductById);
 
+module.exports = router;
 
 

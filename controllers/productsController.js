@@ -119,6 +119,11 @@ const splitList = (value) =>
     .filter(Boolean);
 
 const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const productNameQuery = (value) => ({
+  productName: { $regex: `^${escapeRegex(String(value || '').trim())}$`, $options: 'i' },
+  isDeleted: false
+});
 
 const generateCode = async () => {
   let code = '';
@@ -402,6 +407,11 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
+    const existingProductName = await Product.findOne(productNameQuery(productName));
+    if (existingProductName) {
+      return res.status(200).json(existingProductName);
+    }
+
     const requestedCode = normalizeCode(code || rootCode);
 
     // Ensure uniqueness even after deletion
@@ -517,7 +527,7 @@ exports.bulkUploadProducts = async (req, res) => {
 
     for (const [index, row] of rows.entries()) {
       try {
-        const productName = row.productName || row.name || row.description;
+        const productName = row.productName || row.partDetails || row.partDetail || row.partName || row.name || row.description;
         if (!productName) throw new Error('productName is required');
 
         const code = normalizeCode(row.code || row.rootCode) || await generateCode();
@@ -539,7 +549,7 @@ exports.bulkUploadProducts = async (req, res) => {
         let product = await Product.findOne({
           $or: [
             { code },
-            { productName }
+            { productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' } }
           ]
         });
         const payload = {
@@ -830,7 +840,4 @@ exports.getProductAnalytics = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-
-
 

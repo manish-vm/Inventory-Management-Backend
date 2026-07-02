@@ -11,6 +11,11 @@ router.post(
 );
 
 router.get(
+  "/report-options/:configId/:stageNumber",
+  controller.getReportOptions
+);
+
+router.get(
   "/:stageId",
   controller.getConfig
 );
