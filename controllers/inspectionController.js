@@ -730,7 +730,9 @@ exports.submitBatchInspectionResponse = async (req, res) => {
             count: countVal,
             defectDetail: String(r?.defectDetail || r?.defectType || r?.question || '').trim(),
             assemblyProcess: String(r?.assemblyProcess || '').trim(),
-            defectType: String(r?.defectType || r?.defectDetail || r?.question || '').trim()
+            defectType: String(r?.defectType || r?.defectDetail || r?.question || '').trim(),
+            subQuestion: String(r?.subQuestion || '').trim(),
+            subOption: String(r?.subOption || '').trim()
           };
           continue;
         }
@@ -1941,6 +1943,47 @@ exports.getMisDashboard = async (req, res) => {
       const answerQuestionId = String(answer?.questionId || '').trim();
       const answerOptionKey = String(answer?.optionKey || '').trim();
 
+      const findNestedQuestion = (rootQuestion, parentOption, nestedQuestions = []) => {
+        for (const nestedQuestion of nestedQuestions || []) {
+          const nestedQuestionText = String(nestedQuestion?.questionText || nestedQuestion?.label || nestedQuestion?.question || '').trim();
+          const nestedQuestionId = String(nestedQuestion?.questionId || nestedQuestion?.id || '').trim();
+          for (const nestedOption of nestedQuestion?.options || []) {
+            const nestedOptionLabel = String(nestedOption?.label || nestedOption?.value || '').trim();
+            const nestedOptionId = String(nestedOption?.optionId || nestedOption?.id || '').trim();
+            const nestedOptionMatches = answerOptionKey && [nestedOptionId, nestedOptionLabel].includes(answerOptionKey);
+            if (nestedQuestionId === answerQuestionId && nestedOptionMatches) {
+              return {
+                rootQuestion,
+                parentOption,
+                subQuestion: nestedQuestionText,
+                subOption: nestedOptionLabel || answerOptionKey,
+                defectName: nestedOptionLabel || answerOptionKey,
+                hasSubQuestion: true
+              };
+            }
+            const deeperMatch = findNestedQuestion(rootQuestion, parentOption, nestedOption?.subQuestions || []);
+            if (deeperMatch) {
+              return {
+                ...deeperMatch,
+                subQuestion: deeperMatch.subQuestion || nestedQuestionText,
+                subOption: deeperMatch.subOption || nestedOptionLabel || answerOptionKey
+              };
+            }
+          }
+          if (nestedQuestionId === answerQuestionId) {
+            return {
+              rootQuestion,
+              parentOption,
+              subQuestion: nestedQuestionText,
+              subOption: answer?.subOption || '',
+              defectName: String(answer?.defectDetail || answer?.defectType || nestedQuestionText).trim(),
+              hasSubQuestion: true
+            };
+          }
+        }
+        return null;
+      };
+
       for (const question of questions) {
         const rootQuestion = String(question?.questionText || question?.label || question?.question || '').trim();
         for (const option of question?.options || []) {
@@ -1957,16 +2000,8 @@ exports.getMisDashboard = async (req, res) => {
               };
           }
 
-          for (const subQuestion of option?.subQuestions || []) {
-            if (String(subQuestion?.questionId || subQuestion?.id || '').trim() === answerQuestionId) {
-              return {
-                rootQuestion,
-                parentOption: optionLabel || answer?.parentOption || answerOptionKey || 'Unspecified',
-                defectName: String(subQuestion?.questionText || subQuestion?.label || subQuestion?.question || '').trim(),
-                hasSubQuestion: true
-              };
-            }
-          }
+          const nestedMatch = findNestedQuestion(rootQuestion, optionLabel || answer?.parentOption || answerOptionKey || 'Unspecified', option?.subQuestions || []);
+          if (nestedMatch) return nestedMatch;
         }
       }
 
@@ -1979,18 +2014,22 @@ exports.getMisDashboard = async (req, res) => {
         const currentLabels = resolveQuestionnaireLabels(response, answer, type) || {};
         const rootQuestion = String(currentLabels.rootQuestion || answer?.rootQuestion || answer?.question || (type === 'rework' ? 'Rework Reason' : 'Rejection Reason')).trim();
         const parentOption = String(currentLabels.parentOption || answer?.parentOption || answer?.optionKey || 'Unspecified').trim();
+        const subQuestion = String(currentLabels.subQuestion || answer?.subQuestion || '').trim();
+        const subOption = String(currentLabels.subOption || answer?.subOption || '').trim();
         const defectName = String(currentLabels.defectName || answer?.defectDetail || answer?.defectType || answer?.question || 'Unspecified').trim();
         const hasSubQuestion = currentLabels.hasSubQuestion ?? (
-          Boolean(answer?.rootQuestion || answer?.parentOption)
+          Boolean(answer?.rootQuestion || answer?.parentOption || answer?.subQuestion || answer?.subOption)
           && normalizeReportText(answer?.defectDetail || answer?.defectType || answer?.question)
             !== normalizeReportText(answer?.parentOption || answer?.optionKey)
         );
         const processName = String(answer?.assemblyProcess || classification.processName || '').trim();
         const partName = String(response?.productName || response?.partName || classification.partName || '').trim();
         return {
-          key: toKey(`${rootQuestion} ${parentOption} ${partName} ${defectName}`),
+          key: toKey(`${rootQuestion} ${parentOption} ${partName} ${subQuestion} ${subOption} ${defectName}`),
           questionHeader: rootQuestion,
           questionAnswer: parentOption,
+          subQuestion,
+          subOption,
           name: defectName,
           hasSubQuestion,
           processName,
@@ -2007,6 +2046,8 @@ exports.getMisDashboard = async (req, res) => {
             defectCode: answer.key,
             questionHeader: answer.questionHeader || '',
             questionAnswer: answer.questionAnswer || '',
+            subQuestion: answer.subQuestion || '',
+            subOption: answer.subOption || '',
             hasSubQuestion: Boolean(answer.hasSubQuestion),
             defectName: answer.name,
             assemblyProcess: answer.processName || '',

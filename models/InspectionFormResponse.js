@@ -8,6 +8,8 @@ const inspectionAnswerSchema = new mongoose.Schema({
   optionKey: String,
   rootQuestion: String,
   parentOption: String,
+  subQuestion: String,
+  subOption: String,
   defectDetail: String,
   assemblyProcess: String,
   defectType: String
