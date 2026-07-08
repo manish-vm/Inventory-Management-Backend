@@ -1,4 +1,5 @@
 const InspectionFormResponse = require('../models/InspectionFormResponse');
+const InspectorVerification = require('../models/InspectorVerification');
 const InspectionScanLog = require('../models/InspectionScanLog');
 const QRCode = require('../models/QRCode');
 const Product = require('../models/Product');
@@ -31,6 +32,7 @@ const todayRange = () => {
 };
 
 const getEmployeeName = (user) => user?.name || user?.username || user?.email || 'Employee';
+const isRoleScopedWorker = (user) => ['employee', 'inspector'].includes(user?.role);
 
 const normalizeInspectionResult = (value) => String(value || '').trim().toUpperCase();
 const normalizeMovementType = (value) => String(value || 'NONE').trim().toUpperCase();
@@ -94,7 +96,7 @@ const employeeIdMatch = (employeeId) => {
 };
 
 const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) => {
-  if (employee?.role !== 'employee') {
+  if (!isRoleScopedWorker(employee)) {
     return {
       allowed: true,
       response: {
@@ -136,7 +138,7 @@ const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) =>
 };
 
 const canEmployeeProcessStage = (employee, stageNumber) => {
-  if (employee?.role !== 'employee') return true;
+  if (!isRoleScopedWorker(employee)) return true;
   const assignedStageNumbers = Array.isArray(employee.assignedStages) && employee.assignedStages.length
     ? employee.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
     : [Number(employee.manufacturingLevel || 1)];
@@ -144,7 +146,7 @@ const canEmployeeProcessStage = (employee, stageNumber) => {
 };
 
 const getEmployeeRolePermission = async (employee, productId) => {
-  if (employee?.role !== 'employee') return null;
+  if (!isRoleScopedWorker(employee)) return null;
   if (!employee.assignedRole || !productId) return { allowed: false, stageNumbers: [] };
 
   const role = await Role.findById(employee.assignedRole).lean();
@@ -166,7 +168,7 @@ const getEmployeeRolePermission = async (employee, productId) => {
 };
 
 const getEmployeeAssignedProductIds = async (employee) => {
-  if (employee?.role !== 'employee') return null;
+  if (!isRoleScopedWorker(employee)) return null;
   if (!employee.assignedRole) return [];
   const role = await Role.findById(employee.assignedRole).select('products permissions').lean();
   if (!role) return [];
@@ -181,6 +183,153 @@ const getEmployeeAssignedProductIds = async (employee) => {
   });
 
   return Array.from(productIds);
+};
+
+const normalizeObjectIdString = (value) => {
+  const raw = String(value || '').trim();
+  return mongoose.Types.ObjectId.isValid(raw) ? raw : '';
+};
+
+const getResponseProduct = async (response) => {
+  const productObjectId = normalizeObjectIdString(response?.productId);
+  if (productObjectId) {
+    const product = await Product.findById(productObjectId).select('code productName').lean();
+    if (product) return product;
+  }
+
+  const candidates = [response?.code, response?.productId, response?.productName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  if (!candidates.length) return null;
+
+  return Product.findOne({
+    $or: [
+      { code: { $in: candidates } },
+      { productName: { $in: candidates } }
+    ]
+  }).select('code productName').lean();
+};
+
+const canInspectorVerifySubmission = async (inspector, response) => {
+  if (inspector?.role === 'admin' || inspector?.role === 'superadmin') return true;
+  if (inspector?.role !== 'inspector') return false;
+  if (!canEmployeeProcessStage(inspector, response?.stageNumber)) return false;
+
+  const assignedProductIds = await getEmployeeAssignedProductIds(inspector);
+  if (assignedProductIds === null) return true;
+  if (!assignedProductIds.length) return false;
+
+  const product = await getResponseProduct(response);
+  if (!product?._id) return false;
+  return assignedProductIds.includes(String(product._id));
+};
+
+const findAnswerOptionMeta = (questions = [], answer = {}) => {
+  const answerQuestionId = String(answer?.questionId || '').trim();
+  const answerOptionKey = String(answer?.optionKey || '').trim();
+
+  const scanQuestions = (items = [], inherited = {}) => {
+    for (const question of items || []) {
+      const questionId = String(question?.questionId || question?.id || '').trim();
+      const questionMeta = {
+        assemblyProcess: question?.assemblyProcess || inherited.assemblyProcess || '',
+        partDetails: question?.partDetails || inherited.partDetails || ''
+      };
+      for (const option of question?.options || []) {
+        const optionLabel = String(option?.label || option?.value || '').trim();
+        const optionId = String(option?.optionId || option?.id || '').trim();
+        const optionMeta = {
+          assemblyProcess: option?.assemblyProcess || questionMeta.assemblyProcess || '',
+          partDetails: option?.partDetails || questionMeta.partDetails || ''
+        };
+        if (questionId === answerQuestionId && answerOptionKey && [optionId, optionLabel].includes(answerOptionKey)) {
+          return optionMeta;
+        }
+        const nestedMatch = scanQuestions(option?.subQuestions || [], optionMeta);
+        if (nestedMatch?.assemblyProcess || nestedMatch?.partDetails) return nestedMatch;
+      }
+      if (questionId === answerQuestionId && (questionMeta.assemblyProcess || questionMeta.partDetails)) {
+        return questionMeta;
+      }
+    }
+    return null;
+  };
+
+  return scanQuestions(questions);
+};
+
+const getAnswerReportContext = async (response = {}) => {
+  const answers = [
+    ...(response.responses || []),
+    ...(response.rejectionFormResponses || []),
+    ...(response.reworkFormResponses || [])
+  ];
+  const countAnswers = answers.filter((answer) => normalizeReportText(answer?.type) === 'count');
+  let processName = countAnswers
+    .map((answer) => String(answer?.assemblyProcess || '').trim())
+    .find(Boolean);
+  let partName = countAnswers
+    .map((answer) => String(answer?.partDetails || answer?.partName || '').trim())
+    .find(Boolean);
+
+  if ((!processName || !partName) && response?.productName) {
+    const config = await ManufacturingConfig.findOne({
+      productName: response.productName
+    }).lean();
+    const stage = (config?.stages || []).find((item) => Number(item.stageNumber) === Number(response?.stageNumber));
+    const formBuckets = [
+      { answers: response.responses || [], questions: stage?.reviewForm?.questions || [] },
+      { answers: response.rejectionFormResponses || [], questions: stage?.reviewForm?.rejectionForm?.questions || [] },
+      { answers: response.reworkFormResponses || [], questions: stage?.reviewForm?.reworkForm?.questions || [] }
+    ];
+
+    for (const bucket of formBuckets) {
+      for (const answer of (bucket.answers || []).filter((item) => normalizeReportText(item?.type) === 'count')) {
+        const meta = findAnswerOptionMeta(bucket.questions, answer);
+        if (!processName && meta?.assemblyProcess) processName = String(meta.assemblyProcess).trim();
+        if (!partName && meta?.partDetails) partName = String(meta.partDetails).trim();
+        if (processName && partName) break;
+      }
+      if (processName && partName) break;
+    }
+  }
+
+  return { processName, partName };
+};
+
+const buildInspectorSubmissionPayload = async (response, verification = null) => {
+  const classification = getInspectionClassification(response);
+  const answerContext = await getAnswerReportContext(response);
+  return {
+    _id: response._id,
+    productId: response.productId || '',
+    productName: response.productName || response.code || '-',
+    partNumber: response.code || response.partName || response.partKey || '-',
+    processName: answerContext.processName || response.assemblyProcess || response.processName || response.stageName || classification.processName || '-',
+    partName: answerContext.partName || response.partName || classification.partName || response.productName || '-',
+    batchNumber: response.batchNo || response.qrId || response.itemId || '-',
+    stageNumber: response.stageNumber,
+    stageName: response.stageName,
+    employeeId: response.employee,
+    employeeName: response.employeeName || 'Employee',
+    employeeAcceptedCount: Number(response.acceptedCount || 0),
+    employeeRejectedCount: Number(response.rejectedCount || 0),
+    employeeReworkCount: Number(response.reworkCount || 0),
+    submittedAt: response.submittedAt || response.createdAt,
+    verification: verification ? {
+      _id: verification._id,
+      inspectorAcceptedCount: verification.inspectorAcceptedCount,
+      difference: verification.difference,
+      verificationStatus: verification.verificationStatus,
+      remarks: verification.remarks,
+      verifiedAt: verification.verifiedAt
+    } : null
+  };
+};
+
+const getVerificationStatus = (difference) => {
+  if (difference === 0) return 'matched';
+  return difference > 0 ? 'over_count' : 'under_count';
 };
 
 const getCurrentQrForCodes = async (codes = []) => {
@@ -240,7 +389,7 @@ const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, produ
   return Promise.all(
     stages.map(async (stage) => {
       const isCurrent = Number(stage.stageNumber) === Number(currentStageNumber);
-      const isAssigned = employee?.role !== 'employee'
+      const isAssigned = !isRoleScopedWorker(employee)
         || (rolePermission?.allowed && rolePermission.stageNumbers.includes(Number(stage.stageNumber)));
       const availableCount = normalizedCodes.length
         ? await getAvailableCountForStage(normalizedCodes, stage.stageNumber)
@@ -332,7 +481,7 @@ exports.getProductForEmployee = async (req, res) => {
 
     const payload = await buildProductPayload(qrCode);
     const rolePermission = await getEmployeeRolePermission(req.user, payload.product?._id);
-    if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+    if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
       return res.status(403).json({ message: 'This product is not assigned to your role' });
     }
     const access = validateEmployeeStageAccess({ employee: req.user, currentStage: payload.currentStage, stages: payload.stages });
@@ -385,7 +534,7 @@ exports.searchProductsForEmployee = async (req, res) => {
     const { q = '' } = req.query;
     const term = String(q).trim();
     const assignedProductIds = await getEmployeeAssignedProductIds(req.user);
-    if (req.user?.role === 'employee' && assignedProductIds.length === 0) return res.json([]);
+    if (['employee', 'inspector'].includes(req.user?.role) && assignedProductIds.length === 0) return res.json([]);
 
     // If employee searches by product name, we must return product-level entry
     // and show overall total QR count under that product.
@@ -495,7 +644,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
     // If matched by productName, compute total QR count under that product name.
     if (productMatch?.productName) {
       const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id);
-      if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+      if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
         return res.status(403).json({ message: 'This product is not assigned to your role' });
       }
       const matchedProducts = await Product.find({ productName: productMatch.productName, ...productScope }).select('code').lean();
@@ -513,7 +662,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const currentStage = getStageByNumber(stages, currentStageNumber);
       const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber });
 
-      if (req.user?.role === 'employee' && !stageRows.some((stage) => stage.selectable)) {
+      if (['employee', 'inspector'].includes(req.user?.role) && !stageRows.some((stage) => stage.selectable)) {
         return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your role` });
       }
 
@@ -584,7 +733,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const { product, config, stages } = await resolveProductContext(code);
     const resolvedProduct = product || productMatch;
     const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id);
-    if (req.user?.role === 'employee' && !rolePermission?.allowed) {
+    if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
       return res.status(403).json({ message: 'This product is not assigned to your role' });
     }
     const currentStageNumber = qrCode?.currentStage > 0 ? qrCode.currentStage : stages[0]?.stageNumber || 1;
@@ -730,6 +879,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
             count: countVal,
             defectDetail: String(r?.defectDetail || r?.defectType || r?.question || '').trim(),
             assemblyProcess: String(r?.assemblyProcess || '').trim(),
+            partDetails: String(r?.partDetails || '').trim(),
             defectType: String(r?.defectType || r?.defectDetail || r?.question || '').trim(),
             subQuestion: String(r?.subQuestion || '').trim(),
             subOption: String(r?.subOption || '').trim()
@@ -1944,7 +2094,7 @@ exports.getMisDashboard = async (req, res) => {
       const answerQuestionId = String(answer?.questionId || '').trim();
       const answerOptionKey = String(answer?.optionKey || '').trim();
 
-      const findNestedQuestion = (rootQuestion, parentOption, nestedQuestions = [], path = []) => {
+      const findNestedQuestion = (rootQuestion, parentOption, nestedQuestions = [], path = [], inheritedMeta = {}) => {
         for (const nestedQuestion of nestedQuestions || []) {
           const nestedQuestionText = String(nestedQuestion?.questionText || nestedQuestion?.label || nestedQuestion?.question || '').trim();
           const nestedQuestionId = String(nestedQuestion?.questionId || nestedQuestion?.id || '').trim();
@@ -1952,6 +2102,10 @@ exports.getMisDashboard = async (req, res) => {
             const nestedOptionLabel = String(nestedOption?.label || nestedOption?.value || '').trim();
             const nestedOptionId = String(nestedOption?.optionId || nestedOption?.id || '').trim();
             const nestedOptionMatches = answerOptionKey && [nestedOptionId, nestedOptionLabel].includes(answerOptionKey);
+            const nestedMeta = {
+              assemblyProcess: nestedOption?.assemblyProcess || nestedQuestion?.assemblyProcess || inheritedMeta.assemblyProcess || '',
+              partDetails: nestedOption?.partDetails || nestedQuestion?.partDetails || inheritedMeta.partDetails || ''
+            };
             const nextPath = nestedQuestionText && (nestedOptionLabel || answerOptionKey)
               ? [...path, { question: nestedQuestionText, option: nestedOptionLabel || answerOptionKey }]
               : path;
@@ -1963,10 +2117,11 @@ exports.getMisDashboard = async (req, res) => {
                 subOption: nestedOptionLabel || answerOptionKey,
                 subQuestionPath: nextPath,
                 defectName: nestedOptionLabel || answerOptionKey,
+                ...nestedMeta,
                 hasSubQuestion: true
               };
             }
-            const deeperMatch = findNestedQuestion(rootQuestion, parentOption, nestedOption?.subQuestions || [], nextPath);
+            const deeperMatch = findNestedQuestion(rootQuestion, parentOption, nestedOption?.subQuestions || [], nextPath, nestedMeta);
             if (deeperMatch) {
               return {
                 ...deeperMatch,
@@ -1985,6 +2140,8 @@ exports.getMisDashboard = async (req, res) => {
               subOption: currentOption,
               subQuestionPath: nestedQuestionText && currentOption ? [...path, { question: nestedQuestionText, option: currentOption }] : path,
               defectName: String(answer?.defectDetail || answer?.defectType || nestedQuestionText).trim(),
+              assemblyProcess: nestedQuestion?.assemblyProcess || inheritedMeta.assemblyProcess || '',
+              partDetails: nestedQuestion?.partDetails || inheritedMeta.partDetails || '',
               hasSubQuestion: true
             };
           }
@@ -2003,12 +2160,17 @@ exports.getMisDashboard = async (req, res) => {
               return {
                 rootQuestion,
                 parentOption: optionLabel || answerOptionKey,
+                assemblyProcess: option?.assemblyProcess || question?.assemblyProcess || '',
+                partDetails: option?.partDetails || question?.partDetails || '',
                 defectName: '',
                 hasSubQuestion: false
               };
           }
 
-          const nestedMatch = findNestedQuestion(rootQuestion, optionLabel || answer?.parentOption || answerOptionKey || 'Unspecified', option?.subQuestions || []);
+          const nestedMatch = findNestedQuestion(rootQuestion, optionLabel || answer?.parentOption || answerOptionKey || 'Unspecified', option?.subQuestions || [], [], {
+            assemblyProcess: option?.assemblyProcess || question?.assemblyProcess || '',
+            partDetails: option?.partDetails || question?.partDetails || ''
+          });
           if (nestedMatch) return nestedMatch;
         }
       }
@@ -2035,8 +2197,8 @@ exports.getMisDashboard = async (req, res) => {
           && normalizeReportText(answer?.defectDetail || answer?.defectType || answer?.question)
             !== normalizeReportText(answer?.parentOption || answer?.optionKey)
         );
-        const processName = String(answer?.assemblyProcess || classification.processName || '').trim();
-        const partName = String(response?.productName || response?.partName || classification.partName || '').trim();
+        const processName = String(answer?.assemblyProcess || currentLabels.assemblyProcess || '').trim();
+        const partName = String(answer?.partDetails || currentLabels.partDetails || answer?.partName || response?.partName || classification.partName || response?.productName || '').trim();
         return {
           key: toKey(`${rootQuestion} ${parentOption} ${partName} ${subQuestion} ${subOption} ${defectName}`),
           questionHeader: rootQuestion,
@@ -2079,6 +2241,12 @@ exports.getMisDashboard = async (req, res) => {
     const addProcessOutput = (report, response, dayIndex, output, rejection) => {
       const partName = String(response?.productName || response?.partName || report.partName || 'Unspecified').trim();
       const processName = String(response?.processName || response?.stageName || report.processName || 'Unspecified').trim();
+      addProcessOutputRow(report, partName, processName, dayIndex, output, rejection);
+    };
+
+    const addProcessOutputRow = (report, partNameValue, processNameValue, dayIndex, output, rejection) => {
+      const partName = String(partNameValue || report.partName || 'Unspecified').trim();
+      const processName = String(processNameValue || report.processName || 'Unspecified').trim();
       const key = toKey(`${partName} ${processName}`);
       if (!report.processRows[key]) {
         report.processRows[key] = {
@@ -2094,6 +2262,22 @@ exports.getMisDashboard = async (req, res) => {
       report.processRows[key].days[dayIndex].rejection += rejection;
       report.processRows[key].totalOutput += output;
       report.processRows[key].totalRejection += rejection;
+    };
+
+    const addAnswerProcessOutputs = (report, answers, dayIndex, output) => {
+      const seenProcessRows = new Set();
+      for (const answer of answers) {
+        const partName = String(answer.partName || '').trim();
+        const processName = String(answer.processName || '').trim();
+        if (!partName && !processName) continue;
+        const key = toKey(`${partName} ${processName}`);
+        if (seenProcessRows.has(key)) continue;
+        seenProcessRows.add(key);
+        const rejection = answers
+          .filter((item) => toKey(`${item.partName || ''} ${item.processName || ''}`) === key)
+          .reduce((sum, item) => sum + toCount(item.count), 0);
+        addProcessOutputRow(report, partName, processName, dayIndex, output, rejection);
+      }
     };
 
     for (const response of responses) {
@@ -2150,20 +2334,24 @@ exports.getMisDashboard = async (req, res) => {
         report.totals.output += output;
         report.totals.rejection += rejected;
         report.totals.rejectionAndRework += rejected + rework;
-        addProcessOutput(report, response, dayIndex, output, rejected);
-
         const isRejectionReport = reportId.endsWith('-helmet-assembly-rejection');
         const isReworkReport = reportId.endsWith('-helmet-assembly-rework');
         const isDynamicRejectionReport = reportId.endsWith('-rejection');
         const isDynamicCrsReport = reportId.endsWith('-crs');
         const isDynamicReworkReport = reportId.endsWith('-rework');
+        const selectedDefects = isRejectionReport || isDynamicRejectionReport || isDynamicCrsReport
+          ? rejectionDefects
+          : isReworkReport || isDynamicReworkReport
+            ? reworkDefects
+            : [...inspectionDefects, ...rejectionDefects, ...reworkDefects];
+        if (selectedDefects.length) {
+          addAnswerProcessOutputs(report, selectedDefects, dayIndex, output);
+        } else {
+          addProcessOutput(report, response, dayIndex, output, rejected);
+        }
         addDefects(
           report,
-          isRejectionReport || isDynamicRejectionReport || isDynamicCrsReport
-            ? rejectionDefects
-            : isReworkReport || isDynamicReworkReport
-              ? reworkDefects
-              : [...inspectionDefects, ...rejectionDefects, ...reworkDefects],
+          selectedDefects,
           dayIndex
         );
       }
@@ -2327,4 +2515,137 @@ exports.getMisTaxonomy = async (req, res) => {
       { value: 'bop-parts-receipt', label: 'BOP Parts Receipt' }
     ]
   });
+};
+
+exports.getInspectorPendingSubmissions = async (req, res) => {
+  try {
+    if (!['inspector', 'admin', 'superadmin'].includes(req.user?.role)) {
+      return res.status(403).json({ message: 'Access denied. Inspector only.' });
+    }
+
+    const verifiedIds = await InspectorVerification.distinct('employeeSubmissionId');
+    const query = {
+      _id: { $nin: verifiedIds },
+      acceptedCount: { $gt: 0 }
+    };
+    if (req.user?.dealerId) query.$or = [{ dealerId: req.user.dealerId }, { dealerId: { $exists: false } }];
+
+    const responses = await InspectionFormResponse.find(query)
+      .sort({ submittedAt: -1, createdAt: -1 })
+      .limit(250)
+      .lean();
+
+    const scoped = [];
+    for (const response of responses) {
+      if (await canInspectorVerifySubmission(req.user, response)) {
+        scoped.push(await buildInspectorSubmissionPayload(response));
+      }
+    }
+
+    res.json({ submissions: scoped });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.submitInspectorVerification = async (req, res) => {
+  try {
+    if (!['inspector', 'admin', 'superadmin'].includes(req.user?.role)) {
+      return res.status(403).json({ message: 'Access denied. Inspector only.' });
+    }
+
+    const { employeeSubmissionId, inspectorAcceptedCount, remarks = '' } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(String(employeeSubmissionId || ''))) {
+      return res.status(400).json({ message: 'employeeSubmissionId is required' });
+    }
+
+    const verifiedCount = Number(inspectorAcceptedCount);
+    if (!Number.isFinite(verifiedCount) || verifiedCount < 0) {
+      return res.status(400).json({ message: 'inspectorAcceptedCount cannot be negative' });
+    }
+
+    const response = await InspectionFormResponse.findById(employeeSubmissionId).lean();
+    if (!response) return res.status(404).json({ message: 'Employee submission not found' });
+
+    const allowed = await canInspectorVerifySubmission(req.user, response);
+    if (!allowed) {
+      return res.status(403).json({ message: 'You are not assigned to verify this product stage' });
+    }
+
+    const existing = await InspectorVerification.findOne({ employeeSubmissionId });
+    if (existing) {
+      return res.status(409).json({ message: 'This employee submission has already been verified' });
+    }
+
+    const employeeAcceptedCount = Number(response.acceptedCount || 0);
+    const difference = verifiedCount - employeeAcceptedCount;
+    const verificationStatus = getVerificationStatus(difference);
+    const processingStage = await ProcessingStage.findOne({
+      code: response.code,
+      stageNumber: response.stageNumber
+    }).sort({ processedAt: -1, createdAt: -1 }).lean();
+
+    const verification = await InspectorVerification.create({
+      productId: response.productId || response.code || '',
+      processingStageId: processingStage?._id || null,
+      employeeSubmissionId: response._id,
+      employeeId: response.employee,
+      inspectorId: req.user._id,
+      employeeAcceptedCount,
+      inspectorAcceptedCount: verifiedCount,
+      employeeRejectedCount: Number(response.rejectedCount || 0),
+      employeeReworkCount: Number(response.reworkCount || 0),
+      difference,
+      verificationStatus,
+      remarks: String(remarks || '').trim(),
+      verifiedAt: new Date(),
+      tenantId: req.user.dealerId || null,
+      organizationId: req.user.dealerId || null
+    });
+
+    res.status(201).json({
+      verification,
+      submission: await buildInspectorSubmissionPayload(response, verification)
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'This employee submission has already been verified' });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getInspectorVerificationLogs = async (req, res) => {
+  try {
+    if (!['inspector', 'admin', 'superadmin'].includes(req.user?.role)) {
+      return res.status(403).json({ message: 'Access denied. Inspector only.' });
+    }
+
+    const query = {};
+    if (req.user?.role === 'inspector') query.inspectorId = req.user._id;
+    if (req.user?.dealerId) query.$or = [{ tenantId: req.user.dealerId }, { tenantId: null }];
+
+    const logs = await InspectorVerification.find(query)
+      .populate('employeeSubmissionId')
+      .populate('employeeId', 'name username email')
+      .populate('inspectorId', 'name username email')
+      .sort({ verifiedAt: -1 })
+      .limit(250)
+      .lean();
+
+    const verificationLogs = [];
+    for (const log of logs) {
+      const response = log.employeeSubmissionId;
+      if (!response) continue;
+      verificationLogs.push({
+        ...(await buildInspectorSubmissionPayload(response, log)),
+        inspectorName: log.inspectorId?.name || log.inspectorId?.username || log.inspectorId?.email || 'Inspector',
+        verificationId: log._id
+      });
+    }
+
+    res.json({ logs: verificationLogs });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 };

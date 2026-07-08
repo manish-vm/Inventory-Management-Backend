@@ -9,7 +9,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String },
   role: { 
     type: String, 
-    enum: ['superadmin', 'admin', 'employee'], 
+    enum: ['superadmin', 'admin', 'employee', 'inspector'], 
     default: 'employee' 
   },
   dealerId: { 

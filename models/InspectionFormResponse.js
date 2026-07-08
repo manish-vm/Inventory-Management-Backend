@@ -12,6 +12,7 @@ const inspectionAnswerSchema = new mongoose.Schema({
   subOption: String,
   defectDetail: String,
   assemblyProcess: String,
+  partDetails: String,
   defectType: String
 }, { _id: false });
 

@@ -19,7 +19,7 @@ const authorize = (...roles) => {
 const adminOnly = authorize('admin');
 
 // Middleware for admin and employee (authenticated users)
-const authAndEmployee = authorize('admin', 'employee');
+const authAndEmployee = authorize('admin', 'employee', 'inspector');
 
 module.exports = { authorize, adminOnly, authAndEmployee };
 

@@ -48,7 +48,7 @@ const adminOnly = async (req, res, next) => {
 
 // Auth and Employee middleware
 const authAndEmployee = async (req, res, next) => {
-  if (req.user && (req.user.role === 'superadmin' || req.user.role === 'admin' || req.user.role === 'employee')) {
+  if (req.user && (req.user.role === 'superadmin' || req.user.role === 'admin' || req.user.role === 'employee' || req.user.role === 'inspector')) {
     next();
   } else {
     res.status(403).json({ message: 'Access denied.' });
