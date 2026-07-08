@@ -11,6 +11,10 @@ router.post('/employee/submit', inspectionController.submitInspection);
 router.get('/employee/scan-logs', inspectionController.getScanLogs);
 router.get('/employee/traceability/:id', inspectionController.getTraceability);
 
+router.get('/inspector/pending-submissions', inspectionController.getInspectorPendingSubmissions);
+router.post('/inspector/verifications', inspectionController.submitInspectorVerification);
+router.get('/inspector/verifications', inspectionController.getInspectorVerificationLogs);
+
 router.get('/admin/responses', adminOnly, inspectionController.getAdminResponses);
 router.get('/admin/production-analytics', adminOnly, inspectionController.getProductionAnalytics);
 router.get('/admin/rejection-report', inspectionController.getRejectionReport);

@@ -4,10 +4,16 @@ const Invoice = require("../models/Invoice");
 const Product = require("../models/Product");
 const Role = require("../models/Role");
 
-const findScopedRole = (roleId, user) => Role.findOne({
-  _id: roleId,
-  dealerId: user.dealerId || null
-});
+const findScopedRole = (roleId, user, roleFor) => {
+  const targetRole = roleFor || 'employee';
+  return Role.findOne({
+    _id: roleId,
+    dealerId: user.dealerId || null,
+    ...(targetRole === 'employee'
+      ? { $or: [{ roleFor: 'employee' }, { roleFor: { $exists: false } }] }
+      : { roleFor: targetRole })
+  });
+};
 
 const stagesFromRole = (role) => {
   const stages = (role?.permissions || []).flatMap((category) =>
@@ -27,12 +33,13 @@ const stagesFromRole = (role) => {
 
 exports.createEmployee = async (req, res) => {
   try {
-    const { password, assignedRole, ...employeeData } = req.body;
+    const { password, assignedRole, role: requestedRole, ...employeeData } = req.body;
+    const userRole = requestedRole === 'inspector' ? 'inspector' : 'employee';
     let role = null;
     let assignedStages = [];
 
     if (assignedRole) {
-      role = await findScopedRole(assignedRole, req.user);
+      role = await findScopedRole(assignedRole, req.user, userRole);
       if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
       assignedStages = stagesFromRole(role);
     }
@@ -47,7 +54,7 @@ exports.createEmployee = async (req, res) => {
       phone: employeeData.phone,
       address: employeeData.address,
       password: password,
-      role: 'employee',
+      role: userRole,
       dealerId: req.user.dealerId,
       manufacturingLevel: assignedStages[0]?.stageNumber || 1,
       assignedStages,
@@ -64,9 +71,9 @@ exports.createEmployee = async (req, res) => {
 exports.getAdminEmployees = async (req, res) => {
   try {
     const employees = await User.find({
-      role: 'employee',
+      role: { $in: ['employee', 'inspector'] },
       dealerId: req.user.dealerId
-    }).select('name email phone address username isActive manufacturingLevel assignedStages assignedRole createdAt').populate('assignedRole', 'roleName').sort({ createdAt: -1 });
+    }).select('name email phone address username role isActive manufacturingLevel assignedStages assignedRole createdAt').populate('assignedRole', 'roleName').sort({ createdAt: -1 });
     res.json(employees);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -84,20 +91,21 @@ exports.updateEmployee = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const { password, name, email, phone, address, isActive, assignedRole } = req.body;
+    const { password, name, email, phone, address, isActive, assignedRole, role: requestedRole } = req.body;
     
     if (name) employee.name = name;
     if (email) employee.email = email;
     if (phone) employee.phone = phone;
     if (address) employee.address = address;
     if (isActive !== undefined) employee.isActive = isActive;
+    if (requestedRole === 'employee' || requestedRole === 'inspector') employee.role = requestedRole;
     if (assignedRole !== undefined) {
       if (!assignedRole) {
         employee.assignedRole = null;
         employee.assignedStages = [];
         employee.manufacturingLevel = 1;
       } else {
-        const role = await findScopedRole(assignedRole, req.user);
+        const role = await findScopedRole(assignedRole, req.user, employee.role);
         if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
         const assignedStages = stagesFromRole(role);
         employee.assignedRole = role._id;

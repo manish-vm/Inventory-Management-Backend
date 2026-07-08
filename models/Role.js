@@ -26,6 +26,11 @@ const permissionCategorySchema = new mongoose.Schema({
 
 const roleSchema = new mongoose.Schema({
   roleName: { type: String, required: true, trim: true },
+  roleFor: {
+    type: String,
+    enum: ['employee', 'inspector'],
+    default: 'employee'
+  },
   permissions: [permissionCategorySchema],
   categories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
   subcategories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subcategory' }],
@@ -36,7 +41,7 @@ const roleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 roleSchema.index(
-  { dealerId: 1, roleName: 1 },
+  { dealerId: 1, roleFor: 1, roleName: 1 },
   { unique: true, collation: { locale: 'en', strength: 2 } }
 );
 

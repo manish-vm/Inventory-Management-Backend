@@ -81,6 +81,7 @@ const buildPermissionTree = async (user) => {
 
 const normalizePayload = async (body, user) => {
   const roleName = String(body.roleName || '').trim();
+  const roleFor = body.roleFor === 'inspector' ? 'inspector' : 'employee';
   if (!roleName) {
     const error = new Error('Role name is required');
     error.status = 400;
@@ -124,7 +125,7 @@ const normalizePayload = async (body, user) => {
   const subcategoryIds = ids(permissions.flatMap((category) => category.subcategories.map((subcategory) => subcategory.subcategoryId).filter(Boolean)));
   const productIds = ids(permissions.flatMap((category) => category.subcategories.flatMap((subcategory) => subcategory.products.map((product) => product.productId))));
   const stageIds = ids(permissions.flatMap((category) => category.subcategories.flatMap((subcategory) => subcategory.products.flatMap((product) => product.stages.map((stage) => stage.stageId)))));
-  return { roleName, permissions, categories: categoryIds, subcategories: subcategoryIds, products: productIds, stages: stageIds };
+  return { roleName, roleFor, permissions, categories: categoryIds, subcategories: subcategoryIds, products: productIds, stages: stageIds };
 };
 
 const sendError = (res, error) => {
@@ -143,7 +144,7 @@ exports.getPermissionTree = async (req, res) => {
 };
 
 exports.getRoles = async (req, res) => {
-  try { res.json(await Role.find(scopeFor(req.user)).sort({ createdAt: -1 }).select('roleName categories subcategories products stages createdAt updatedAt')); }
+  try { res.json(await Role.find(scopeFor(req.user)).sort({ createdAt: -1 }).select('roleName roleFor categories subcategories products stages createdAt updatedAt')); }
   catch (error) { sendError(res, error); }
 };
 
