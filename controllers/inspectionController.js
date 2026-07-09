@@ -2024,7 +2024,7 @@ exports.getMisDashboard = async (req, res) => {
       submittedAt: { $gte: start, $lt: end }
     })
       .select([
-        'productName', 'code', 'partDescription', 'productionLine', 'reportType',
+        'productName', 'code', 'qrId', 'partDescription', 'productionLine', 'reportType',
         'processKey', 'processName', 'partKey', 'partName', 'stageNumber', 'stageName', 'formName',
         'acceptedCount', 'rejectedCount', 'reworkCount', 'responses',
         'rejectionFormResponses', 'reworkFormResponses', 'submittedAt'
@@ -2055,6 +2055,21 @@ exports.getMisDashboard = async (req, res) => {
     const configsByProductName = new Map((await ManufacturingConfig.find({
       productName: { $in: responseProductNames }
     }).lean()).map((config) => [normalizeReportText(config.productName), config]));
+    const responseQrIds = [
+      ...new Set(responses.map((response) => response.qrId).filter(Boolean))
+    ];
+    const qrCodesByQrId = new Map((await QRCode.find({ qrId: { $in: responseQrIds } })
+      .select('qrId currentStage status')
+      .lean()).map((qrCode) => [qrCode.qrId, qrCode]));
+
+    const resolveCurrentStageName = (response) => {
+      const config = configsByProductName.get(normalizeReportText(response?.productName));
+      const qrCode = qrCodesByQrId.get(response?.qrId);
+      if (qrCode?.status === 'completed') return 'Completed';
+      const currentStageNumber = Number(qrCode?.currentStage || response?.stageNumber || 0);
+      const currentStage = (config?.stages || []).find((stage) => Number(stage.stageNumber) === currentStageNumber);
+      return String(currentStage?.stageName || response?.stageName || (currentStageNumber ? `Stage ${currentStageNumber}` : '')).trim();
+    };
 
     const ensureReport = (reportId, classification) => {
       if (!reports[reportId]) {
@@ -2199,8 +2214,10 @@ exports.getMisDashboard = async (req, res) => {
         );
         const processName = String(answer?.assemblyProcess || currentLabels.assemblyProcess || '').trim();
         const partName = String(answer?.partDetails || currentLabels.partDetails || answer?.partName || response?.partName || classification.partName || response?.productName || '').trim();
+        const stageName = resolveCurrentStageName(response);
         return {
-          key: toKey(`${rootQuestion} ${parentOption} ${partName} ${subQuestion} ${subOption} ${defectName}`),
+          key: toKey(`${stageName} ${rootQuestion} ${parentOption} ${partName} ${subQuestion} ${subOption} ${defectName}`),
+          stageName,
           questionHeader: rootQuestion,
           questionAnswer: parentOption,
           subQuestion,
@@ -2227,6 +2244,7 @@ exports.getMisDashboard = async (req, res) => {
             subQuestionPath: answer.subQuestionPath || [],
             hasSubQuestion: Boolean(answer.hasSubQuestion),
             defectName: answer.name,
+            stageName: answer.stageName || '',
             assemblyProcess: answer.processName || '',
             partName: answer.partName || '',
             days: Array(daysInMonth).fill(0),
