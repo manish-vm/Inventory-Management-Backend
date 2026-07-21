@@ -3,6 +3,8 @@ const RefundRequest = require('../models/RefundRequest');
 const Invoice = require('../models/Invoice');
 const Product = require('../models/Product');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
+const { scopedQuery, tenantFields, inferredInvoiceQuery } = require('../utils/tenantScope');
 
 // Create a new refund request
 exports.createRefundRequest = async (req, res) => {
@@ -18,7 +20,7 @@ exports.createRefundRequest = async (req, res) => {
     }
 
     // Find the invoice
-    const invoice = await Invoice.findById(invoiceId).session(session);
+    const invoice = await Invoice.findOne(await inferredInvoiceQuery(req.user, { _id: invoiceId }, User)).session(session);
     
     if (!invoice) {
       await session.abortTransaction();
@@ -46,6 +48,7 @@ exports.createRefundRequest = async (req, res) => {
       invoiceId: invoice._id,
       invoiceNumber: invoice.invoiceNumber,
       customerId: req.user._id,
+      dealerId: invoice.dealerId || req.user.dealerId || null,
       customerName: invoice.customerName,
       items: invoice.items.map(item => ({
         productId: item.productId,
@@ -96,6 +99,8 @@ exports.getRefundRequests = async (req, res) => {
     const { status } = req.query;
     let query = {};
 
+    query = scopedQuery(req.user, query);
+
     // If not admin, only show their own requests
     if (req.user.role !== 'admin') {
       query.customerId = req.user._id;
@@ -137,7 +142,7 @@ exports.approveRefundRequest = async (req, res) => {
   session.startTransaction();
 
   try {
-    const refundRequest = await RefundRequest.findById(req.params.id).session(session);
+    const refundRequest = await RefundRequest.findOne(scopedQuery(req.user, { _id: req.params.id })).session(session);
 
     if (!refundRequest) {
       await session.abortTransaction();
@@ -151,16 +156,16 @@ exports.approveRefundRequest = async (req, res) => {
 
     // Restore stock for each item
     for (const item of refundRequest.items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
+      await Product.findOneAndUpdate(
+        scopedQuery(req.user, { _id: item.productId }),
         { $inc: { stockQuantity: item.quantity } },
         { session }
       );
     }
 
     // Update the invoice status to refunded
-    await Invoice.findByIdAndUpdate(
-      refundRequest.invoiceId,
+    await Invoice.findOneAndUpdate(
+      await inferredInvoiceQuery(req.user, { _id: refundRequest.invoiceId }, User),
       { status: 'refunded' },
       { session }
     );
@@ -204,7 +209,7 @@ exports.rejectRefundRequest = async (req, res) => {
   try {
     const { reason } = req.body;
 
-    const refundRequest = await RefundRequest.findById(req.params.id);
+    const refundRequest = await RefundRequest.findOne(scopedQuery(req.user, { _id: req.params.id }));
 
     if (!refundRequest) {
       return res.status(404).json({ message: 'Refund request not found' });
@@ -234,7 +239,7 @@ exports.rejectRefundRequest = async (req, res) => {
 // Get count of pending refund requests
 exports.getPendingCount = async (req, res) => {
   try {
-    const count = await RefundRequest.countDocuments({ status: 'pending' });
+    const count = await RefundRequest.countDocuments(scopedQuery(req.user, { status: 'pending' }));
     res.json({ count });
   } catch (error) {
     console.error('Fetch pending count error:', error);

@@ -3,6 +3,7 @@ const User = require("../models/User");
 const Invoice = require("../models/Invoice");
 const Product = require("../models/Product");
 const Role = require("../models/Role");
+const { inferredInvoiceQuery } = require("../utils/tenantScope");
 
 const findScopedRole = (roleId, user, roleFor) => {
   const targetRole = roleFor || 'employee';
@@ -273,10 +274,10 @@ exports.getEmployeeProfile = async (req, res) => {
     }
     
     // Get all invoices where this employee was the referred employee
-    const invoices = await Invoice.find({
+    const invoices = await Invoice.find(await inferredInvoiceQuery(req.user, {
       referredEmployee: userId,
       status: 'completed'
-    }).lean();
+    }, User)).lean();
     
     // Calculate total sales
     const totalSales = invoices.reduce((sum, inv) => sum + inv.totalAmount, 0);

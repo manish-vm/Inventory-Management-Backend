@@ -11,6 +11,12 @@ const StageReviewSubmissionSchema = new mongoose.Schema({
     ref: "Product"
   },
 
+  dealerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Dealer",
+    default: null
+  },
+
   stageId: {
     type: String
   },

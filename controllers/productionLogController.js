@@ -1,10 +1,11 @@
 const ProductionLog = require('../models/ProductionLog');
 const QRCode = require('../models/QRCode');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getAllProductionLogs = async (req, res) => {
   try {
     const { search, code, status, stage } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.$or = [
@@ -28,7 +29,7 @@ exports.getAllProductionLogs = async (req, res) => {
 
 exports.getProductionLogById = async (req, res) => {
   try {
-    const log = await ProductionLog.findById(req.params.id)
+    const log = await ProductionLog.findOne(scopedQuery(req.user, { _id: req.params.id }))
       .populate('qrId', 'qrId code');
     
     if (!log) {
@@ -62,7 +63,8 @@ exports.createProductionLog = async (req, res) => {
       producedBy,
       operator,
       remarks,
-      status: 'completed'
+      status: 'completed',
+      ...tenantFields(req.user)
     });
 
     await log.save();
@@ -76,7 +78,7 @@ exports.createProductionLog = async (req, res) => {
     else if (stageType === 'processing') qrStatus = 'processing';
     else if (stageType === 'in_production') qrStatus = 'in_production';
 
-    await QRCode.findByIdAndUpdate(qrId, {
+    await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: qrId }), {
       $inc: { quantity: quantity || 0 },
       status: qrStatus
     });
@@ -92,7 +94,7 @@ exports.createProductionLog = async (req, res) => {
 
 exports.updateProductionLog = async (req, res) => {
   try {
-    const log = await ProductionLog.findById(req.params.id);
+    const log = await ProductionLog.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!log) {
       return res.status(404).json({ message: 'Production log not found' });
     }
@@ -113,6 +115,9 @@ exports.updateProductionLog = async (req, res) => {
 exports.getProductionStats = async (req, res) => {
   try {
     const stats = await ProductionLog.aggregate([
+      {
+        $match: scopedQuery(req.user, {})
+      },
       {
         $lookup: {
           from: 'qrcodes',
@@ -152,6 +157,7 @@ exports.getDailyProduction = async (req, res) => {
     const stats = await ProductionLog.aggregate([
       {
         $match: {
+          ...scopedQuery(req.user, {}),
           createdAt: { $gte: sevenDaysAgo }
         }
       },

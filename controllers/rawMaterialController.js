@@ -1,10 +1,11 @@
 const RawMaterial = require('../models/RawMaterial');
 const QRCode = require('../models/QRCode');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getAllRawMaterials = async (req, res) => {
   try {
     const { search, status, code } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.$or = [
@@ -27,7 +28,7 @@ exports.getAllRawMaterials = async (req, res) => {
 
 exports.getRawMaterialById = async (req, res) => {
   try {
-    const rawMaterial = await RawMaterial.findById(req.params.id)
+    const rawMaterial = await RawMaterial.findOne(scopedQuery(req.user, { _id: req.params.id }))
       .populate('qrId', 'qrId code quantity');
     
     if (!rawMaterial) {
@@ -59,13 +60,14 @@ exports.createRawMaterial = async (req, res) => {
         isValid,
         variance: variance * 100,
         remarks: isValid ? 'Within tolerance' : 'Weight variance exceeds tolerance'
-      }
+      },
+      ...tenantFields(req.user)
     });
 
     await rawMaterial.save();
 
     if (isValid) {
-      await QRCode.findByIdAndUpdate(qrId, { 
+      await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: qrId }), { 
         status: 'in_production',
         'weightData.totalWeight': totalWeight,
         'weightData.unitWeight': unitWeight,
@@ -83,7 +85,7 @@ exports.createRawMaterial = async (req, res) => {
 
 exports.validateRawMaterial = async (req, res) => {
   try {
-    const rawMaterial = await RawMaterial.findById(req.params.id);
+    const rawMaterial = await RawMaterial.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!rawMaterial) {
       return res.status(404).json({ message: 'Raw material not found' });
     }
@@ -101,7 +103,7 @@ exports.validateRawMaterial = async (req, res) => {
     await rawMaterial.save();
 
     if (isValid) {
-      await QRCode.findByIdAndUpdate(rawMaterial.qrId, { 
+      await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: rawMaterial.qrId }), { 
         status: 'in_production',
         'weightData.validated': true
       });
@@ -115,7 +117,7 @@ exports.validateRawMaterial = async (req, res) => {
 
 exports.updateRawMaterialQuantity = async (req, res) => {
   try {
-    const rawMaterial = await RawMaterial.findById(req.params.id);
+    const rawMaterial = await RawMaterial.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!rawMaterial) {
       return res.status(404).json({ message: 'Raw material not found' });
     }
@@ -134,6 +136,9 @@ exports.updateRawMaterialQuantity = async (req, res) => {
 exports.getRawMaterialStats = async (req, res) => {
   try {
     const stats = await RawMaterial.aggregate([
+      {
+        $match: scopedQuery(req.user, {})
+      },
       {
         $group: {
           _id: '$status',

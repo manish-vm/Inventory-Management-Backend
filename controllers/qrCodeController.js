@@ -1,10 +1,11 @@
 const QRCode = require('../models/QRCode');
 const Product = require('../models/Product');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getAllQRCodes = async (req, res) => {
   try {
     const { search, status, code } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.$or = [
@@ -27,7 +28,7 @@ exports.getAllQRCodes = async (req, res) => {
 
 exports.getQRCodeById = async (req, res) => {
   try {
-    const qrCode = await QRCode.findById(req.params.id);
+    const qrCode = await QRCode.findOne(scopedQuery(req.user, { _id: req.params.id }));
     
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
@@ -40,7 +41,7 @@ exports.getQRCodeById = async (req, res) => {
 
 exports.getQRCodeByQRId = async (req, res) => {
   try {
-    const qrCode = await QRCode.findOne({ qrId: req.params.qrId });
+    const qrCode = await QRCode.findOne(scopedQuery(req.user, { qrId: req.params.qrId }));
     
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
@@ -59,7 +60,7 @@ exports.createQRCode = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const product = await Product.findOne({ productName, isDeleted: false });
+    const product = await Product.findOne(scopedQuery(req.user, { productName, isDeleted: false }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
@@ -70,7 +71,8 @@ exports.createQRCode = async (req, res) => {
       code: resolvedcode,
       batchNo: barcodeNo || resolvedcode,
       quantity: quantity || 0,
-      currentStage: 1
+      currentStage: 1,
+      ...tenantFields(req.user)
     });
 
     await qrCode.save();
@@ -90,7 +92,7 @@ exports.bulkCreateQRCodes = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const product = await Product.findOne({ productName, isDeleted: false });
+    const product = await Product.findOne(scopedQuery(req.user, { productName, isDeleted: false }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found for given Product Name' });
     }
@@ -103,7 +105,8 @@ exports.bulkCreateQRCodes = async (req, res) => {
         code: resolvedcode,
         batchNo: `${resolvedcode}-${i + 1}`,
         quantity: quantity || 0,
-        currentStage: 1
+        currentStage: 1,
+        ...tenantFields(req.user)
       });
       qrCodes.push(qrCode);
     }
@@ -117,7 +120,7 @@ exports.bulkCreateQRCodes = async (req, res) => {
 
 exports.updateQRCode = async (req, res) => {
   try {
-    const qrCode = await QRCode.findById(req.params.id);
+    const qrCode = await QRCode.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
     }
@@ -137,7 +140,7 @@ exports.updateQRCode = async (req, res) => {
 
 exports.updateQRCodeProgress = async (req, res) => {
   try {
-    const qrCode = await QRCode.findById(req.params.id);
+    const qrCode = await QRCode.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
     }
@@ -189,7 +192,7 @@ exports.updateQRCodeProgress = async (req, res) => {
 
 exports.deleteQRCode = async (req, res) => {
   try {
-    const qrCode = await QRCode.findByIdAndDelete(req.params.id);
+    const qrCode = await QRCode.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
     }
@@ -202,6 +205,9 @@ exports.deleteQRCode = async (req, res) => {
 exports.getQRCodeStats = async (req, res) => {
   try {
     const stats = await QRCode.aggregate([
+      {
+        $match: scopedQuery(req.user, {})
+      },
       {
         $group: {
           _id: '$status',

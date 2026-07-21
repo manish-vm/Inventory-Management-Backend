@@ -11,11 +11,7 @@ const ids = (values) => [...new Set((Array.isArray(values) ? values : []).map(St
 const buildPermissionTree = async (user, stageType = 'stages') => {
   const productQuery = { isDeleted: false, isActive: true };
   if (user.dealerId) {
-    productQuery.$or = [
-      { dealerId: user.dealerId },
-      { dealerId: null },
-      { dealerId: { $exists: false } }
-    ];
+    productQuery.dealerId = user.dealerId;
   }
 
   const [categoryRecords, subcategoryRecords, products] = await Promise.all([
@@ -29,7 +25,7 @@ const buildPermissionTree = async (user, stageType = 'stages') => {
   ]);
   const productNames = products.map((product) => product.productName).filter(Boolean);
   const configQuery = { productName: { $in: productNames }, isActive: true };
-  if (user.dealerId) configQuery.$or = [{ dealerId: user.dealerId }, { dealerId: null }];
+  if (user.dealerId) configQuery.dealerId = user.dealerId;
   const configs = await ManufacturingConfig.find(configQuery).lean();
   const configByName = new Map(configs.map((config) => [config.productName.trim().toLowerCase(), config]));
   const categories = new Map(categoryRecords.map((category) => [

@@ -13,6 +13,7 @@ const refundRequestSchema = new mongoose.Schema({
   invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', required: true },
   invoiceNumber: { type: String, required: true },
   customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  dealerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer', default: null },
   customerName: { type: String, required: true },
   items: [refundItemSchema],
   subtotal: { type: Number, required: true },

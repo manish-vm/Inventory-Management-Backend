@@ -54,6 +54,12 @@ const StageReviewConfigSchema = new mongoose.Schema({
     required: true
   },
 
+  dealerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Dealer",
+    default: null
+  },
+
   configurationMode: {
     type: String,
     enum: ['stages', 'finalStages'],

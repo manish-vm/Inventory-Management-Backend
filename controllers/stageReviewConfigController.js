@@ -2,6 +2,20 @@ const StageReviewConfig = require("../models/StageReviewConfig");
 const StageReviewSubmission = require("../models/StageReviewSubmission");
 const { getManufacturingStatsByCode } = require("../utils/manufacturingStats");
 const ManufacturingConfig = require("../models/ManufacturingConfig");
+const User = require("../models/User");
+const {
+  scopedQuery,
+  tenantFields,
+  getDealerUserIds
+} = require("../utils/tenantScope");
+
+const scopedInspectionResponseQuery = async (user, base = {}) => {
+  if (user?.role === 'superadmin') return { ...base };
+  if (user?.role === 'employee') return { ...base, employee: user._id };
+  const dealerUserIds = await getDealerUserIds(user, User);
+  if (!dealerUserIds) return { ...base, employee: user?._id };
+  return { ...base, employee: { $in: dealerUserIds } };
+};
 
 const parseStageNumber = (stageId) => {
   // Accept stageId shapes like:
@@ -53,9 +67,10 @@ exports.createOrUpdateConfig = async (req, res) => {
     } = req.body;
 
     const config = await StageReviewConfig.findOneAndUpdate(
-      { stageId },
+      scopedQuery(req.user, { stageId }),
       {
         stageId,
+        ...tenantFields(req.user),
         configurationMode: configurationMode === 'finalStages' ? 'finalStages' : 'stages',
         acceptedRouteStage: acceptedRouteStage || "",
         reworkRouteStage: reworkRouteStage || "",
@@ -90,7 +105,7 @@ exports.getConfig = async (req, res) => {
     const { stageId } = req.params;
 
     const config = await StageReviewConfig.findOne({
-      stageId
+      ...scopedQuery(req.user, { stageId })
     });
 
     res.status(200).json({
@@ -109,7 +124,7 @@ exports.getConfig = async (req, res) => {
 exports.getReportOptions = async (req, res) => {
   try {
     const { configId, stageNumber } = req.params;
-    const config = await ManufacturingConfig.findById(configId).lean();
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: configId })).lean();
     if (!config) {
       return res.status(404).json({ success: false, message: "Configuration not found" });
     }
@@ -148,7 +163,10 @@ exports.getReportOptions = async (req, res) => {
 
 exports.submitReview = async (req, res) => {
   try {
-    const submission = await StageReviewSubmission.create(req.body);
+    const submission = await StageReviewSubmission.create({
+      ...req.body,
+      ...tenantFields(req.user)
+    });
 
     res.status(201).json({
       success: true,
@@ -184,11 +202,11 @@ exports.getAnalytics = async (req, res) => {
 
       if (isFinalMode) {
         const InspectionFormResponse = require('../models/InspectionFormResponse');
-        const responses = await InspectionFormResponse.find({
+        const responses = await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, {
           code,
           stageNumber: parsedStageNumber,
           finalStage: true
-        });
+        }));
 
         const ok = responses.reduce((sum, r) => sum + Number(r.acceptedCount || 0), 0);
         const notOk = responses.reduce((sum, r) => sum + Number(r.rejectedCount || 0), 0);
@@ -228,10 +246,10 @@ exports.getAnalytics = async (req, res) => {
     if (isFinalMode) {
       const parsedStageNumber = parseStageNumber(stageId);
       const InspectionFormResponse = require('../models/InspectionFormResponse');
-      const responses = await InspectionFormResponse.find({
+      const responses = await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, {
         stageNumber: parsedStageNumber,
         finalStage: true
-      });
+      }));
 
       const ok = responses.reduce((sum, r) => sum + Number(r.acceptedCount || 0), 0);
       const notOk = responses.reduce((sum, r) => sum + Number(r.rejectedCount || 0), 0);
@@ -250,9 +268,9 @@ exports.getAnalytics = async (req, res) => {
       });
     }
 
-    const submissions = await StageReviewSubmission.find({
+    const submissions = await StageReviewSubmission.find(scopedQuery(req.user, {
       stageId
-    });
+    }));
 
     const total = submissions.length;
     const accepted = submissions.filter(s => s.status === "accepted").length;
