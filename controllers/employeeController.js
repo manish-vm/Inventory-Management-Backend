@@ -9,9 +9,9 @@ const findScopedRole = (roleId, user, roleFor) => {
   return Role.findOne({
     _id: roleId,
     dealerId: user.dealerId || null,
-    ...(targetRole === 'employee'
-      ? { $or: [{ roleFor: 'employee' }, { roleFor: { $exists: false } }] }
-      : { roleFor: targetRole })
+    ...(['employee', 'inspector', 'finalStages'].includes(targetRole)
+      ? { roleFor: targetRole }
+      : { roleFor: 'employee' })
   });
 };
 
@@ -33,15 +33,23 @@ const stagesFromRole = (role) => {
 
 exports.createEmployee = async (req, res) => {
   try {
-    const { password, assignedRole, role: requestedRole, ...employeeData } = req.body;
+    const { password, assignedRole, assignedFinalStageRole, role: requestedRole, ...employeeData } = req.body;
     const userRole = requestedRole === 'inspector' ? 'inspector' : 'employee';
     let role = null;
     let assignedStages = [];
+    let finalStageRole = null;
+    let assignedFinalStages = [];
 
     if (assignedRole) {
       role = await findScopedRole(assignedRole, req.user, userRole);
       if (!role) return res.status(400).json({ message: 'Selected role is invalid or unavailable' });
       assignedStages = stagesFromRole(role);
+    }
+
+    if (assignedFinalStageRole) {
+      finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, 'finalStages');
+      if (!finalStageRole) return res.status(400).json({ message: 'Selected final stages role is invalid or unavailable' });
+      assignedFinalStages = stagesFromRole(finalStageRole);
     }
     
     // Ensure employee belongs to admin's dealer
@@ -59,6 +67,8 @@ exports.createEmployee = async (req, res) => {
       manufacturingLevel: assignedStages[0]?.stageNumber || 1,
       assignedStages,
       assignedRole: role?._id || null,
+      assignedFinalStageRole: finalStageRole?._id || null,
+      assignedFinalStages,
       isActive: true
     });
 
@@ -73,7 +83,7 @@ exports.getAdminEmployees = async (req, res) => {
     const employees = await User.find({
       role: { $in: ['employee', 'inspector'] },
       dealerId: req.user.dealerId
-    }).select('name email phone address username role isActive manufacturingLevel assignedStages assignedRole createdAt').populate('assignedRole', 'roleName').sort({ createdAt: -1 });
+    }).select('name email phone address username role isActive manufacturingLevel assignedStages assignedRole assignedFinalStages assignedFinalStageRole createdAt').populate('assignedRole assignedFinalStageRole', 'roleName').sort({ createdAt: -1 });
     res.json(employees);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -91,7 +101,7 @@ exports.updateEmployee = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const { password, name, email, phone, address, isActive, assignedRole, role: requestedRole } = req.body;
+    const { password, name, email, phone, address, isActive, assignedRole, assignedFinalStageRole, role: requestedRole } = req.body;
     
     if (name) employee.name = name;
     if (email) employee.email = email;
@@ -113,10 +123,21 @@ exports.updateEmployee = async (req, res) => {
         employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
       }
     }
+    if (assignedFinalStageRole !== undefined) {
+      if (!assignedFinalStageRole) {
+        employee.assignedFinalStageRole = null;
+        employee.assignedFinalStages = [];
+      } else {
+        const finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, 'finalStages');
+        if (!finalStageRole) return res.status(400).json({ message: 'Selected final stages role is invalid or unavailable' });
+        employee.assignedFinalStageRole = finalStageRole._id;
+        employee.assignedFinalStages = stagesFromRole(finalStageRole);
+      }
+    }
     if (password) employee.password = password;
 
     await employee.save();
-    const updated = await User.findById(req.params.id).select('-password').populate('assignedRole', 'roleName');
+    const updated = await User.findById(req.params.id).select('-password').populate('assignedRole assignedFinalStageRole', 'roleName');
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: err.message });

@@ -41,8 +41,11 @@ exports.createOrUpdateConfig = async (req, res) => {
     const { stageId } = req.params;
 
     const {
+      configurationMode,
       acceptedRouteStage,
       reworkRouteStage,
+      okQuestionnaireEnabled,
+      okQuestions,
       rejectionQuestionnaireEnabled,
       rejectionQuestions,
       reworkQuestionnaireEnabled,
@@ -53,8 +56,11 @@ exports.createOrUpdateConfig = async (req, res) => {
       { stageId },
       {
         stageId,
+        configurationMode: configurationMode === 'finalStages' ? 'finalStages' : 'stages',
         acceptedRouteStage: acceptedRouteStage || "",
         reworkRouteStage: reworkRouteStage || "",
+        okQuestionnaireEnabled: Boolean(okQuestionnaireEnabled),
+        okQuestions: Array.isArray(okQuestions) ? okQuestions : [],
         rejectionQuestionnaireEnabled: Boolean(rejectionQuestionnaireEnabled),
         rejectionQuestions: Array.isArray(rejectionQuestions) ? rejectionQuestions : [],
         reworkQuestionnaireEnabled: Boolean(reworkQuestionnaireEnabled),
@@ -165,12 +171,39 @@ exports.getAnalytics = async (req, res) => {
     const { stageId } = req.params;
     const { code } = req.query;
 
+    const isFinalMode = String(stageId).includes('-finalStages-');
+
     if (code) {
       const parsedStageNumber = parseStageNumber(stageId);
       if (!parsedStageNumber) {
         return res.status(400).json({
           success: false,
           message: `Invalid stageId. Could not parse stage number from: ${stageId}`
+        });
+      }
+
+      if (isFinalMode) {
+        const InspectionFormResponse = require('../models/InspectionFormResponse');
+        const responses = await InspectionFormResponse.find({
+          code,
+          stageNumber: parsedStageNumber,
+          finalStage: true
+        });
+
+        const ok = responses.reduce((sum, r) => sum + Number(r.acceptedCount || 0), 0);
+        const notOk = responses.reduce((sum, r) => sum + Number(r.rejectedCount || 0), 0);
+        const pending = responses.reduce((sum, r) => sum + Number(r.reworkCount || 0), 0);
+        const total = ok + notOk + pending;
+
+        return res.status(200).json({
+          success: true,
+          data: {
+            total,
+            totalItems: total,
+            ok,
+            notOk,
+            pending
+          }
         });
       }
 
@@ -192,39 +225,51 @@ exports.getAnalytics = async (req, res) => {
       });
     }
 
+    if (isFinalMode) {
+      const parsedStageNumber = parseStageNumber(stageId);
+      const InspectionFormResponse = require('../models/InspectionFormResponse');
+      const responses = await InspectionFormResponse.find({
+        stageNumber: parsedStageNumber,
+        finalStage: true
+      });
+
+      const ok = responses.reduce((sum, r) => sum + Number(r.acceptedCount || 0), 0);
+      const notOk = responses.reduce((sum, r) => sum + Number(r.rejectedCount || 0), 0);
+      const pending = responses.reduce((sum, r) => sum + Number(r.reworkCount || 0), 0);
+      const total = ok + notOk + pending;
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          total,
+          totalItems: total,
+          ok,
+          notOk,
+          pending
+        }
+      });
+    }
+
     const submissions = await StageReviewSubmission.find({
       stageId
     });
 
     const total = submissions.length;
-
-    const accepted = submissions.filter(
-      s => s.status === "accepted"
-    ).length;
-
-    const rejected = submissions.filter(
-      s => s.status === "rejected"
-    ).length;
-
-    const rework = submissions.filter(
-      s => s.status === "rework"
-    ).length;
+    const accepted = submissions.filter(s => s.status === "accepted").length;
+    const rejected = submissions.filter(s => s.status === "rejected").length;
+    const rework = submissions.filter(s => s.status === "rework").length;
 
     res.status(200).json({
       success: true,
       data: {
         total,
+        totalItems: total,
         accepted,
         rejected,
         rework,
-        acceptedPercentage:
-          total > 0 ? (accepted / total) * 100 : 0,
-
-        rejectedPercentage:
-          total > 0 ? (rejected / total) * 100 : 0,
-
-        reworkPercentage:
-          total > 0 ? (rework / total) * 100 : 0
+        acceptedPercentage: total > 0 ? (accepted / total) * 100 : 0,
+        rejectedPercentage: total > 0 ? (rejected / total) * 100 : 0,
+        reworkPercentage: total > 0 ? (rework / total) * 100 : 0
       }
     });
 

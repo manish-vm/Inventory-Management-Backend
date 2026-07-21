@@ -30,6 +30,7 @@ const formRoutes = require('./routes/forms');
 const defectDetailRoutes = require('./routes/defectDetails');
 const roleRoutes = require('./routes/roles');
 const misOperationsRoutes = require('./routes/misOperations');
+const attendanceRoutes = require('./routes/attendance');
 
 
 
@@ -84,6 +85,7 @@ app.use('/api/forms', formRoutes);
 app.use('/api/defect-details', defectDetailRoutes);
 app.use('/api/roles', roleRoutes);
 app.use('/api/mis-operations', misOperationsRoutes);
+app.use('/api/attendance', attendanceRoutes);
 
 app.get('/', (req, res) => {
   res.send('Welcome to the Inventory and Billing System API - Backend Running Successfully!');
