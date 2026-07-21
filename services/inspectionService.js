@@ -10,15 +10,19 @@ const normalizeQuestions = (stage) => {
   return [];
 };
 
-const resolveProductContext = async (code) => {
+const resolveProductContext = async (code, options = {}) => {
   const product = await Product.findOne({ code });
 
   const config = product
     ? await ManufacturingConfig.findOne({ productName: product.productName })
     : null;
 
-  const stages = config?.stages?.length
-    ? config.stages
+  if (options.finalStagesOnly) {
+    return { product, config, stages: config?.finalStages || [] };
+  }
+
+  let stages = config?.stages?.length
+    ? [...config.stages]
     : [
         {
           stageNumber: 1,
@@ -27,6 +31,10 @@ const resolveProductContext = async (code) => {
           reviewForm: {}
         }
       ];
+
+  if (config?.finalStages?.length) {
+    stages = stages.concat(config.finalStages);
+  }
 
   return { product, config, stages };
 };

@@ -54,6 +54,12 @@ const StageReviewConfigSchema = new mongoose.Schema({
     required: true
   },
 
+  configurationMode: {
+    type: String,
+    enum: ['stages', 'finalStages'],
+    default: 'stages'
+  },
+
   acceptedRouteStage: {
     type: String,
     default: ""
@@ -70,6 +76,13 @@ const StageReviewConfigSchema = new mongoose.Schema({
   },
 
   rejectionQuestions: [ReviewQuestionSchema],
+
+  okQuestionnaireEnabled: {
+    type: Boolean,
+    default: false
+  },
+
+  okQuestions: [ReviewQuestionSchema],
 
   reworkQuestionnaireEnabled: {
     type: Boolean,

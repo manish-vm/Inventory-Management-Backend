@@ -49,6 +49,7 @@ const inspectionFormResponseSchema = new mongoose.Schema({
   rejectionFormResponses: [inspectionAnswerSchema],
   reworkFormResponses: [inspectionAnswerSchema],
   remarks: { type: String, default: '' },
+  finalStage: { type: Boolean, default: false },
   movement: {
     type: {
       type: String,

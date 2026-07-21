@@ -139,7 +139,7 @@ exports.getManufacturingConfigByCode = async (req, res) => {
 
 exports.createManufacturingConfig = async (req, res) => {
   try {
-    const { productName, stages } = req.body;
+    const { productName, stages, finalStages } = req.body;
 
     if (!productName) {
       return res.status(400).json({ message: 'productName is required' });
@@ -157,12 +157,17 @@ exports.createManufacturingConfig = async (req, res) => {
       return res.status(400).json({ message: 'Configuration already exists for this productName' });
     }
 
-    const normalizedStages = normalizeStages(stages, productContextFromProduct(product));
+    const productContext = productContextFromProduct(product);
+    const normalizedStages = normalizeStages(stages, productContext);
+    const normalizedFinalStages = Array.isArray(finalStages)
+      ? normalizeStages(finalStages, productContext)
+      : [];
 
     const config = new ManufacturingConfig({
       productName: productName || product.productName || product.description,
       workflowType: getWorkflowType(normalizedStages),
-      stages: normalizedStages
+      stages: normalizedStages,
+      finalStages: normalizedFinalStages
     });
 
     await config.save();
@@ -179,7 +184,7 @@ exports.updateManufacturingConfig = async (req, res) => {
       return res.status(404).json({ message: 'Configuration not found' });
     }
 
-    const { productName, workflowType, stages, isActive } = req.body;
+    const { productName, workflowType, stages, finalStages, isActive } = req.body;
     let productContext = null;
 
     if (productName !== undefined && productName !== config.productName) {
@@ -214,6 +219,16 @@ exports.updateManufacturingConfig = async (req, res) => {
       config.workflowType = getWorkflowType(normalizedStages);
     } else if (workflowType) {
       config.workflowType = workflowType;
+    }
+
+    if (finalStages) {
+      if (!productContext) {
+        const product = await Product.findOne({ productName: productName || config.productName })
+          .populate('category', 'name')
+          .populate('subcategory', 'name');
+        productContext = product ? productContextFromProduct(product) : { productName: productName || config.productName };
+      }
+      config.finalStages = normalizeStages(finalStages, productContext);
     }
     if (isActive !== undefined) config.isActive = isActive;
 
@@ -259,6 +274,18 @@ exports.getReviewForms = async (req, res) => {
         partKey: s.partKey || '',
         partName: s.partName || '',
         reviewForm: s.reviewForm || { outcomes: [] }
+      })),
+      finalStages: (config.finalStages || []).map((s) => ({
+        stageNumber: s.stageNumber,
+        stageName: s.stageName,
+        stageType: s.stageType,
+        productionLine: s.productionLine || '',
+        reportType: s.reportType || '',
+        processKey: s.processKey || '',
+        processName: s.processName || '',
+        partKey: s.partKey || '',
+        partName: s.partName || '',
+        reviewForm: s.reviewForm || { outcomes: [] }
       }))
     });
   } catch (error) {
@@ -275,14 +302,15 @@ exports.saveReviewForms = async (req, res) => {
       return res.status(404).json({ message: 'Configuration not found' });
     }
 
-    const { stages } = req.body;
+    const { stages, target = 'stages' } = req.body;
     if (!Array.isArray(stages)) {
       return res.status(400).json({ message: '`stages` array is required' });
     }
 
     const stageByNumber = new Map(stages.map((s) => [Number(s.stageNumber), s]));
 
-    config.stages = config.stages.map((existingStage) => {
+    const stageCollection = target === 'finalStages' ? (config.finalStages || []) : config.stages;
+    const updatedStages = stageCollection.map((existingStage) => {
       const incoming = stageByNumber.get(Number(existingStage.stageNumber));
       if (!incoming) return existingStage;
 
@@ -291,6 +319,12 @@ exports.saveReviewForms = async (req, res) => {
         reviewForm: incoming.reviewForm || { outcomes: [] }
       };
     });
+
+    if (target === 'finalStages') {
+      config.finalStages = updatedStages;
+    } else {
+      config.stages = updatedStages;
+    }
 
     await config.save();
 

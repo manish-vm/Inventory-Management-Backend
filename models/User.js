@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   phone: { type: String },
+  address: { type: String },
   role: { 
     type: String, 
     enum: ['superadmin', 'admin', 'employee', 'inspector'], 
@@ -30,6 +31,20 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Role',
     default: null
+  },
+  assignedFinalStageRole: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Role',
+    default: null
+  },
+  assignedFinalStages: [{
+    stageNumber: Number,
+    stageName: String
+  }],
+  shift: {
+    type: String,
+    enum: ['day', 'evening', 'night'],
+    default: 'day'
   },
   isActive: { type: Boolean, default: true },
   monthlySalesTarget: { type: Number, default: 0 },

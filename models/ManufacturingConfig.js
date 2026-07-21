@@ -38,6 +38,25 @@ const manufacturingConfigSchema = new mongoose.Schema({
       }
     }
   }],
+  finalStages: [{
+    stageNumber: { type: Number, required: true },
+    stageName: { type: String, required: true },
+    stageType: { type: String, enum: ['manufacturing', 'processing', 'assembly'], required: true },
+    description: String,
+    requiresValidation: { type: Boolean, default: false },
+    productionLine: { type: String, default: '' },
+    reportType: { type: String, default: '' },
+    processKey: { type: String, default: '' },
+    processName: { type: String, default: '' },
+    partKey: { type: String, default: '' },
+    partName: { type: String, default: '' },
+    reviewForm: {
+      type: Object,
+      default: {
+        outcomes: []
+      }
+    }
+  }],
   isActive: { 
     type: Boolean, 
     default: true 

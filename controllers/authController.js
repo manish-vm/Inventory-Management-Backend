@@ -63,7 +63,9 @@ exports.login = async (req, res) => {
         name: user.name,
         email: user.email, 
         role: user.role,
-        assignedRole: user.assignedRole || null
+        dealerId: user.dealerId || null,
+        assignedRole: user.assignedRole || null,
+        assignedFinalStageRole: user.assignedFinalStageRole || null
       }
     });
   } catch (error) {

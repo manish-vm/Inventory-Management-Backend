@@ -19,17 +19,29 @@ router.get('/stage/:stageId', auth, async (req, res) => {
       return res.json([]);
     }
 
-    const query = { productName: resolvedProductName, 'stages.stageNumber': stageId };
+    const query = {
+      productName: resolvedProductName,
+      $or: [
+        { 'stages.stageNumber': stageId },
+        { 'finalStages.stageNumber': stageId }
+      ]
+    };
 
     const config = await ManufacturingConfig.findOne(query);
-    const stage = config?.stages?.find((item) => Number(item.stageNumber) === stageId);
+    const stage =
+      config?.stages?.find((item) => Number(item.stageNumber) === stageId) ||
+      config?.finalStages?.find((item) => Number(item.stageNumber) === stageId);
     const formType = String(req.query.formType || 'inspection').toLowerCase();
-    const formDefinition =
-      formType === 'rejection'
-        ? stage?.reviewForm?.rejectionForm
-        : formType === 'rework'
-          ? stage?.reviewForm?.reworkForm
-          : stage?.reviewForm;
+    let formDefinition;
+    if (formType === 'rejection') {
+      formDefinition = stage?.reviewForm?.rejectionForm;
+    } else if (formType === 'rework') {
+      formDefinition = stage?.reviewForm?.reworkForm;
+    } else if (formType === 'inspection') {
+      formDefinition = stage?.reviewForm?.okForm || null;
+    } else {
+      formDefinition = stage?.reviewForm;
+    }
     const questions = formDefinition?.questions || formDefinition?.outcomes || [];
 
     if (!config || !stage || questions.length === 0) {

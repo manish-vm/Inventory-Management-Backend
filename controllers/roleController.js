@@ -8,7 +8,7 @@ const ManufacturingConfig = require('../models/ManufacturingConfig');
 const scopeFor = (user) => ({ dealerId: user.dealerId || null });
 const ids = (values) => [...new Set((Array.isArray(values) ? values : []).map(String))];
 
-const buildPermissionTree = async (user) => {
+const buildPermissionTree = async (user, stageType = 'stages') => {
   const productQuery = { isDeleted: false, isActive: true };
   if (user.dealerId) {
     productQuery.$or = [
@@ -57,11 +57,12 @@ const buildPermissionTree = async (user) => {
       }
     }
     const config = configByName.get(String(product.productName).trim().toLowerCase());
+    const stageCollection = stageType === 'finalStages' ? (config?.finalStages || []) : (config?.stages || []);
     subcategory.products.push({
       id: String(product._id),
       name: product.productName,
       code: product.code,
-      stages: (config?.stages || []).map((stage) => ({
+      stages: stageCollection.map((stage) => ({
         id: String(stage._id),
         stageNumber: stage.stageNumber,
         name: stage.stageName || `Stage ${stage.stageNumber}`
@@ -81,7 +82,7 @@ const buildPermissionTree = async (user) => {
 
 const normalizePayload = async (body, user) => {
   const roleName = String(body.roleName || '').trim();
-  const roleFor = body.roleFor === 'inspector' ? 'inspector' : 'employee';
+  const roleFor = body.roleFor === 'inspector' ? 'inspector' : body.roleFor === 'finalStages' ? 'finalStages' : 'employee';
   if (!roleName) {
     const error = new Error('Role name is required');
     error.status = 400;
@@ -92,7 +93,10 @@ const normalizePayload = async (body, user) => {
   const selectedSubcategories = new Set(ids(body.subcategories));
   const selectedProducts = new Set(ids(body.products));
   const selectedStages = new Set(ids(body.stages));
-  const tree = await buildPermissionTree(user);
+  const selectedFinalStages = new Set(ids(body.finalStages));
+
+  const stageType = roleFor === 'finalStages' ? 'finalStages' : 'stages';
+  const tree = await buildPermissionTree(user, stageType);
   const permissions = tree.map((category) => ({
     categoryId: category.id,
     categoryName: category.name,
@@ -140,11 +144,14 @@ const sendError = (res, error) => {
 };
 
 exports.getPermissionTree = async (req, res) => {
-  try { res.json(await buildPermissionTree(req.user)); } catch (error) { sendError(res, error); }
+  try {
+    const stageType = req.query.stageType === 'finalStages' ? 'finalStages' : 'stages';
+    res.json(await buildPermissionTree(req.user, stageType));
+  } catch (error) { sendError(res, error); }
 };
 
 exports.getRoles = async (req, res) => {
-  try { res.json(await Role.find(scopeFor(req.user)).sort({ createdAt: -1 }).select('roleName roleFor categories subcategories products stages createdAt updatedAt')); }
+  try { res.json(await Role.find(scopeFor(req.user)).sort({ createdAt: -1 }).select('roleName roleFor categories subcategories products stages finalStages createdAt updatedAt')); }
   catch (error) { sendError(res, error); }
 };
 
