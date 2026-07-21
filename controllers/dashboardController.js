@@ -1,20 +1,26 @@
 const Product = require('../models/Product');
 const Invoice = require('../models/Invoice');
+const User = require('../models/User');
+const { inferredProductQuery, inferredInvoiceQuery } = require('../utils/tenantScope');
 
 // @desc    Get dashboard statistics
 // @route   GET /api/dashboard/stats
 exports.getStats = async (req, res) => {
   try {
     // Total products count
-    const totalProducts = await Product.countDocuments();
+    const productQuery = await inferredProductQuery(req.user, { isDeleted: false }, { User, Invoice });
+    const invoiceMatch = await inferredInvoiceQuery(req.user, { status: 'completed' }, User);
+
+    const totalProducts = await Product.countDocuments(productQuery);
 
     // Low stock products count
     const lowStockCount = await Product.countDocuments({
+      ...productQuery,
       $expr: { $lte: ['$stockQuantity', '$minStockLevel'] }
     });
 
     // Total stock value (base price * quantity)
-    const products = await Product.find();
+    const products = await Product.find(productQuery);
     const totalStockValue = products.reduce((sum, p) => sum + (p.basePrice * p.stockQuantity), 0);
 
     // Total sales value (selling price * quantity)
@@ -30,8 +36,8 @@ exports.getStats = async (req, res) => {
     const todaySales = await Invoice.aggregate([
       {
         $match: {
-          createdAt: { $gte: today, $lt: tomorrow },
-          status: 'completed'
+          ...invoiceMatch,
+          createdAt: { $gte: today, $lt: tomorrow }
         }
       },
       {
@@ -49,8 +55,8 @@ exports.getStats = async (req, res) => {
     const monthlySales = await Invoice.aggregate([
       {
         $match: {
-          createdAt: { $gte: startOfMonth },
-          status: 'completed'
+          ...invoiceMatch,
+          createdAt: { $gte: startOfMonth }
         }
       },
       {
@@ -65,7 +71,7 @@ exports.getStats = async (req, res) => {
     // Total revenue - all time completed invoices
     const totalRevenueData = await Invoice.aggregate([
       {
-        $match: { status: 'completed' }
+        $match: invoiceMatch
       },
       {
         $group: {
@@ -96,9 +102,10 @@ exports.getStats = async (req, res) => {
 // @route   GET /api/dashboard/low-stock
 exports.getLowStock = async (req, res) => {
   try {
-    const products = await Product.find({
+    const products = await Product.find(await inferredProductQuery(req.user, {
+      isDeleted: false,
       $expr: { $lte: ['$stockQuantity', '$minStockLevel'] }
-    })
+    }, { User, Invoice }))
     .populate('category', 'name')
     .sort({ stockQuantity: 1 });
 
@@ -124,8 +131,8 @@ exports.getSalesChart = async (req, res) => {
     const salesData = await Invoice.aggregate([
       {
         $match: {
-          createdAt: { $gte: sevenDaysAgo },
-          status: 'completed'
+          ...(await inferredInvoiceQuery(req.user, { status: 'completed' }, User)),
+          createdAt: { $gte: sevenDaysAgo }
         }
       },
       {
@@ -166,6 +173,9 @@ exports.getSalesChart = async (req, res) => {
 exports.getCategoryDistribution = async (req, res) => {
   try {
     const distribution = await Product.aggregate([
+      {
+        $match: await inferredProductQuery(req.user, { isDeleted: false }, { User, Invoice })
+      },
       {
         $group: {
           _id: '$category',
@@ -213,8 +223,8 @@ exports.getTopProducts = async (req, res) => {
     const topProducts = await Invoice.aggregate([
       {
         $match: {
-          createdAt: { $gte: startDate },
-          status: 'completed'
+          ...(await inferredInvoiceQuery(req.user, { status: 'completed' }, User)),
+          createdAt: { $gte: startDate }
         }
       },
       { $unwind: '$items' },
@@ -249,10 +259,7 @@ exports.getEmployeeSalesProgress = async (req, res) => {
       matchQuery.cashier = req.user._id;
     }
     
-    // Filter by dealer for multi-tenant
-    if (req.user.dealerId) {
-      matchQuery.dealerId = req.user.dealerId;
-    }
+    matchQuery = await inferredInvoiceQuery(req.user, matchQuery, User);
     
     if (fromDate || toDate) {
       matchQuery.createdAt = {};

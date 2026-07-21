@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { scopedQuery, tenantFields, inferredInvoiceQuery } = require('../utils/tenantScope');
 
 // @desc    Create invoice and update stock
 // @route   POST /api/billing/checkout
@@ -25,7 +26,7 @@ exports.checkout = async (req, res) => {
     let subtotal = 0;
 
     for (const item of items) {
-      const product = await Product.findById(item.productId);
+      const product = await Product.findOne(scopedQuery(req.user, { _id: item.productId, isDeleted: false }));
       
       if (!product) {
         return res.status(404).json({ message: `Product not found: ${item.productId}` });
@@ -53,13 +54,13 @@ exports.checkout = async (req, res) => {
     // 2. Deduct stock and check for low stock
     const lowStockProducts = [];
     for (const item of items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
+      await Product.findOneAndUpdate(
+        scopedQuery(req.user, { _id: item.productId }),
         { $inc: { stockQuantity: -item.quantity } }
       );
       
       // Check if product is now low on stock
-      const updatedProduct = await Product.findById(item.productId);
+      const updatedProduct = await Product.findOne(scopedQuery(req.user, { _id: item.productId }));
       if (updatedProduct && updatedProduct.stockQuantity <= updatedProduct.minStockLevel) {
         lowStockProducts.push(updatedProduct);
       }
@@ -77,7 +78,8 @@ exports.checkout = async (req, res) => {
       paymentMethod: paymentMethod || 'cash',
       cashier: req.user._id,
       referredEmployee,
-      status: 'completed'
+      status: 'completed',
+      ...tenantFields(req.user)
     });
 
     await invoice.save();
@@ -89,7 +91,7 @@ exports.checkout = async (req, res) => {
     if (lowStockProducts.length > 0) {
       try {
         // Find all admins
-        const admins = await User.find({ role: 'admin' });
+        const admins = await User.find(scopedQuery(req.user, { role: 'admin' }));
         
         if (admins.length > 0) {
           await Notification.create(
@@ -148,7 +150,7 @@ exports.getInvoices = async (req, res) => {
       // Employees see invoices where they are the referred employee
       query.referredEmployee = req.user._id;
     }
-    // Admin sees all invoices (no filter)
+    query = await inferredInvoiceQuery(req.user, query, User);
 
     if (startDate || endDate) {
       query.createdAt = {};
@@ -174,7 +176,7 @@ exports.getInvoices = async (req, res) => {
 // @route   GET /api/billing/invoices/:id
 exports.getInvoiceById = async (req, res) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
+    const invoice = await Invoice.findOne(await inferredInvoiceQuery(req.user, { _id: req.params.id }, User))
       .populate('cashier', 'name')
       .populate('referredEmployee', 'name')
       .populate({ path: 'items.productId', populate: { path: 'category', select: 'name' } });
@@ -192,7 +194,7 @@ exports.getInvoiceById = async (req, res) => {
 // @route   GET /api/billing/invoice-number/:invoiceNumber
 exports.getInvoiceByNumber = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({ invoiceNumber: req.params.invoiceNumber })
+    const invoice = await Invoice.findOne(await inferredInvoiceQuery(req.user, { invoiceNumber: req.params.invoiceNumber }, User))
       .populate('cashier', 'name')
       .populate('referredEmployee', 'name')
       .populate({ path: 'items.productId', populate: { path: 'category', select: 'name' } });
@@ -213,7 +215,7 @@ exports.refundInvoice = async (req, res) => {
   session.startTransaction();
 
   try {
-    const invoice = await Invoice.findById(req.params.id).session(session);
+    const invoice = await Invoice.findOne(await inferredInvoiceQuery(req.user, { _id: req.params.id }, User)).session(session);
     
     if (!invoice) {
       await session.abortTransaction();
@@ -227,8 +229,8 @@ exports.refundInvoice = async (req, res) => {
 
     // Restore stock for each item
     for (const item of invoice.items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
+      await Product.findOneAndUpdate(
+        scopedQuery(req.user, { _id: item.productId }),
         { $inc: { stockQuantity: item.quantity } },
         { session }
       );
@@ -253,7 +255,7 @@ exports.refundInvoice = async (req, res) => {
 // @route   GET /api/billing/invoices/:id/pdf
 exports.downloadInvoicePDF = async (req, res) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
+    const invoice = await Invoice.findOne(await inferredInvoiceQuery(req.user, { _id: req.params.id }, User))
       .populate('cashier', 'name')
       .populate({ path: 'items.productId', populate: { path: 'category', select: 'name' } });
     

@@ -10,13 +10,20 @@ const QRCode = require('../models/QRCode');
 const DefectDetail = require('../models/DefectDetail');
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const StageReviewConfig = require('../models/StageReviewConfig');
+const User = require('../models/User');
+const {
+  scopedQuery,
+  tenantFields,
+  inferredProductQuery,
+  inferredInvoiceQuery
+} = require('../utils/tenantScope');
 
 // @desc    Get all products (with optional search/filter)
 // @route   GET /api/products
 exports.getProducts = async (req, res) => {
   try {
     const { search, category, subcategory, lowStock } = req.query;
-    let query = { isDeleted: false }; // Only show non-deleted products
+    let query = await inferredProductQuery(req.user, { isDeleted: false }, { User, Invoice }); // Only show non-deleted products
 
     if (search) {
       query.$or = [
@@ -53,7 +60,7 @@ exports.getProducts = async (req, res) => {
 // @route   GET /api/products/:id
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id)
+    const product = await Product.findOne(await inferredProductQuery(req.user, { _id: req.params.id, isDeleted: false }, { User, Invoice }))
       .populate('category', 'name')
       .populate('subcategory', 'name');
     if (!product) {
@@ -70,10 +77,7 @@ exports.getProductById = async (req, res) => {
 exports.getProductByCode = async (req, res) => {
   try {
     const code = String(req.params.code || '').trim().toUpperCase();
-    const product = await Product.findOne({
-      $or: [{ code }],
-      isDeleted: false
-    })
+    const product = await Product.findOne(await inferredProductQuery(req.user, { code, isDeleted: false }, { User, Invoice }))
       .populate('category', 'name')
       .populate('subcategory', 'name');
 
@@ -407,7 +411,7 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const existingProductName = await Product.findOne(productNameQuery(productName));
+    const existingProductName = await Product.findOne(scopedQuery(req.user, productNameQuery(productName)));
     if (existingProductName) {
       return res.status(200).json(existingProductName);
     }
@@ -417,7 +421,7 @@ exports.createProduct = async (req, res) => {
     // Ensure uniqueness even after deletion
     if (requestedCode) {
       const existingProduct = await Product.findOne({
-        code: requestedCode
+        ...scopedQuery(req.user, { code: requestedCode })
       });
       if (existingProduct) {
         return res.status(400).json({ message: 'Code already exists' });
@@ -441,7 +445,8 @@ exports.createProduct = async (req, res) => {
       sellingPrice,
       brandName: resolved.brandName,
       model: resolved.model,
-      withQRCode: Boolean(withQRCode ?? createQRCode)
+      withQRCode: Boolean(withQRCode ?? createQRCode),
+      ...tenantFields(req.user)
     });
 
     await product.save();
@@ -473,7 +478,7 @@ exports.updateProduct = async (req, res) => {
       sellingPrice
     } = req.body;
 
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -483,7 +488,7 @@ exports.updateProduct = async (req, res) => {
     if (requestedCode && requestedCode !== product.code) {
       const existingProduct = await Product.findOne({
         _id: { $ne: product._id },
-        code: requestedCode
+        ...scopedQuery(req.user, { code: requestedCode })
       });
       if (existingProduct) {
         return res.status(400).json({ message: 'Code already exists' });
@@ -547,6 +552,7 @@ exports.bulkUploadProducts = async (req, res) => {
         await ensureDefects('rework', row.reworkDefects || row.defectReworkDetails);
 
         let product = await Product.findOne({
+          ...tenantFields(req.user),
           $or: [
             { code },
             { productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' } }
@@ -562,7 +568,8 @@ exports.bulkUploadProducts = async (req, res) => {
           model: resolved.model,
           ...(resolvedCategory.category ? { category: resolvedCategory.category } : {}),
           ...(resolvedCategory.subcategory ? { subcategory: resolvedCategory.subcategory } : {}),
-          withQRCode
+          withQRCode,
+          ...tenantFields(req.user)
         };
 
         if (product) {
@@ -608,7 +615,7 @@ exports.bulkUploadProducts = async (req, res) => {
 // @route   DELETE /api/products/:id
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findByIdAndDelete(req.params.id);
+    const product = await Product.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -622,9 +629,10 @@ exports.deleteProduct = async (req, res) => {
 // @route   GET /api/products/low-stock/all
 exports.getLowStockProducts = async (req, res) => {
   try {
-    const products = await Product.find({
+    const products = await Product.find(await inferredProductQuery(req.user, {
+      isDeleted: false,
       $expr: { $lte: ['$stockQuantity', '$minStockLevel'] }
-    })
+    }, { User, Invoice }))
       .populate('category', 'name')
       .populate('subcategory', 'name');
     res.json(products);
@@ -764,7 +772,7 @@ exports.getProductAnalytics = async (req, res) => {
   try {
     const ObjectId = mongoose.Types.ObjectId;
     const productId = req.params.id;
-    const product = await Product.findById(productId)
+    const product = await Product.findOne(await inferredProductQuery(req.user, { _id: productId, isDeleted: false }, { User, Invoice }))
       .populate('category', 'name')
       .populate('subcategory', 'name');
 
@@ -774,7 +782,7 @@ exports.getProductAnalytics = async (req, res) => {
 
     const totalSoldResult = await Invoice.aggregate([
       { $unwind: '$items' },
-      { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
+      { $match: await inferredInvoiceQuery(req.user, { 'items.productId': new ObjectId(productId), status: 'completed' }, User) },
       { $group: { _id: null, totalSold: { $sum: '$items.quantity' } } }
     ]);
     const totalSold = totalSoldResult[0]?.totalSold || 0;
@@ -786,6 +794,7 @@ exports.getProductAnalytics = async (req, res) => {
       {
         $match: {
           'items.productId': new ObjectId(productId),
+          ...(await inferredInvoiceQuery(req.user, {}, User)),
           status: 'completed',
           createdAt: { $gte: thirtyDaysAgo }
         }
@@ -802,20 +811,21 @@ exports.getProductAnalytics = async (req, res) => {
 
     const uniqueCustomers = await Invoice.distinct('customerName', {
       items: { $elemMatch: { productId: new ObjectId(productId) } },
+      ...(await inferredInvoiceQuery(req.user, {}, User)),
       status: 'completed'
     });
 
     const totalRevenueResult = await Invoice.aggregate([
       { $unwind: '$items' },
-      { $match: { 'items.productId': new ObjectId(productId), status: 'completed' } },
+      { $match: await inferredInvoiceQuery(req.user, { 'items.productId': new ObjectId(productId), status: 'completed' }, User) },
       { $group: { _id: null, totalRevenue: { $sum: '$items.total' } } }
     ]);
     const totalRevenue = totalRevenueResult[0]?.totalRevenue || 0;
 
-    const recentActivity = await Invoice.find({
+    const recentActivity = await Invoice.find(await inferredInvoiceQuery(req.user, {
       items: { $elemMatch: { productId: new ObjectId(productId) } },
       status: 'completed'
-    })
+    }, User))
       .select('createdAt invoiceNumber customerName totalAmount')
       .sort({ createdAt: -1 })
       .limit(10);

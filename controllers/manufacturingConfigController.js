@@ -1,6 +1,7 @@
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const Product = require('../models/Product');
 const { getInspectionClassification } = require('../utils/reportClassification');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 const getWorkflowType = (stages = []) => `${Math.max(stages.length, 1)}-step`;
 const defaultStages = [
@@ -88,7 +89,7 @@ const sendSaveError = (res, error) => {
 exports.getAllManufacturingConfigs = async (req, res) => {
   try {
     const { search, workflowType } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.productName = { $regex: search, $options: 'i' };
@@ -105,7 +106,7 @@ exports.getAllManufacturingConfigs = async (req, res) => {
 
 exports.getManufacturingConfigById = async (req, res) => {
   try {
-    const config = await ManufacturingConfig.findById(req.params.id);
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -117,17 +118,12 @@ exports.getManufacturingConfigById = async (req, res) => {
 
 exports.getManufacturingConfigByCode = async (req, res) => {
   try {
-    const product = await Product.findOne({
-      $or: [
-        { code: req.params.code },
-        { code: req.params.code }
-      ]
-    });
+    const product = await Product.findOne(scopedQuery(req.user, { code: req.params.code, isDeleted: false }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
-    const config = await ManufacturingConfig.findOne({ productName: product.productName || product.description });
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { productName: product.productName || product.description }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -145,14 +141,14 @@ exports.createManufacturingConfig = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const product = await Product.findOne({ productName })
+    const product = await Product.findOne(scopedQuery(req.user, { productName, isDeleted: false }))
       .populate('category', 'name')
       .populate('subcategory', 'name');
     if (!product) {
       return res.status(404).json({ message: 'Product not found for given productName' });
     }
 
-    const existingConfig = await ManufacturingConfig.findOne({ productName });
+    const existingConfig = await ManufacturingConfig.findOne(scopedQuery(req.user, { productName }));
     if (existingConfig) {
       return res.status(400).json({ message: 'Configuration already exists for this productName' });
     }
@@ -167,7 +163,8 @@ exports.createManufacturingConfig = async (req, res) => {
       productName: productName || product.productName || product.description,
       workflowType: getWorkflowType(normalizedStages),
       stages: normalizedStages,
-      finalStages: normalizedFinalStages
+      finalStages: normalizedFinalStages,
+      ...tenantFields(req.user)
     });
 
     await config.save();
@@ -179,7 +176,7 @@ exports.createManufacturingConfig = async (req, res) => {
 
 exports.updateManufacturingConfig = async (req, res) => {
   try {
-    const config = await ManufacturingConfig.findById(req.params.id);
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -188,7 +185,7 @@ exports.updateManufacturingConfig = async (req, res) => {
     let productContext = null;
 
     if (productName !== undefined && productName !== config.productName) {
-      const product = await Product.findOne({ productName })
+      const product = await Product.findOne(scopedQuery(req.user, { productName, isDeleted: false }))
         .populate('category', 'name')
         .populate('subcategory', 'name');
       if (!product) {
@@ -198,7 +195,7 @@ exports.updateManufacturingConfig = async (req, res) => {
 
       const existingConfig = await ManufacturingConfig.findOne({
         productName,
-        _id: { $ne: config._id }
+        ...scopedQuery(req.user, { _id: { $ne: config._id } })
       });
       if (existingConfig) {
         return res.status(400).json({ message: 'Configuration already exists for this productName' });
@@ -209,7 +206,7 @@ exports.updateManufacturingConfig = async (req, res) => {
 
     if (stages) {
       if (!productContext) {
-        const product = await Product.findOne({ productName: productName || config.productName })
+        const product = await Product.findOne(scopedQuery(req.user, { productName: productName || config.productName, isDeleted: false }))
           .populate('category', 'name')
           .populate('subcategory', 'name');
         productContext = product ? productContextFromProduct(product) : { productName: productName || config.productName };
@@ -223,7 +220,7 @@ exports.updateManufacturingConfig = async (req, res) => {
 
     if (finalStages) {
       if (!productContext) {
-        const product = await Product.findOne({ productName: productName || config.productName })
+        const product = await Product.findOne(scopedQuery(req.user, { productName: productName || config.productName, isDeleted: false }))
           .populate('category', 'name')
           .populate('subcategory', 'name');
         productContext = product ? productContextFromProduct(product) : { productName: productName || config.productName };
@@ -241,7 +238,7 @@ exports.updateManufacturingConfig = async (req, res) => {
 
 exports.deleteManufacturingConfig = async (req, res) => {
   try {
-    const config = await ManufacturingConfig.findByIdAndDelete(req.params.id);
+    const config = await ManufacturingConfig.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -255,7 +252,7 @@ exports.deleteManufacturingConfig = async (req, res) => {
 // Payload shape is flexible because the UI can evolve.
 exports.getReviewForms = async (req, res) => {
   try {
-    const config = await ManufacturingConfig.findById(req.params.id);
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -297,7 +294,7 @@ exports.getReviewForms = async (req, res) => {
 // Expected body: { stages: [{ stageNumber, reviewForm }] }
 exports.saveReviewForms = async (req, res) => {
   try {
-    const config = await ManufacturingConfig.findById(req.params.id);
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });
     }
@@ -340,23 +337,21 @@ exports.validateStageSequence = async (req, res) => {
     const { qrId, stageNumber } = req.body;
 
     const QRCode = require('../models/QRCode');
-    const qrCode = await QRCode.findById(qrId);
+    const qrCode = await QRCode.findOne(scopedQuery(req.user, { _id: qrId }));
 
     if (!qrCode) {
       return res.status(404).json({ message: 'QR Code not found' });
     }
 
     // QRCode -> Product (by code) -> ManufacturingConfig (by productName)
-    const product = await Product.findOne({
-      $or: [{ code: qrCode.code }, { code: qrCode.code }]
-    });
+    const product = await Product.findOne(scopedQuery(req.user, { code: qrCode.code, isDeleted: false }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found for QR code' });
     }
 
-    const config = await ManufacturingConfig.findOne({
+    const config = await ManufacturingConfig.findOne(scopedQuery(req.user, {
       productName: product.productName || product.description
-    });
+    }));
 
     if (!config) {
       return res.status(404).json({ message: 'Configuration not found' });

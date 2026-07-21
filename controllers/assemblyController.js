@@ -1,10 +1,11 @@
 const Assembly = require('../models/Assembly');
 const QRCode = require('../models/QRCode');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getAllAssemblies = async (req, res) => {
   try {
     const { search, status } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.$or = [
@@ -27,7 +28,7 @@ exports.getAllAssemblies = async (req, res) => {
 
 exports.getAssemblyById = async (req, res) => {
   try {
-    const assembly = await Assembly.findById(req.params.id)
+    const assembly = await Assembly.findOne(scopedQuery(req.user, { _id: req.params.id }))
       .populate('components.qrId', 'qrId code');
     
     if (!assembly) {
@@ -44,7 +45,7 @@ exports.createAssembly = async (req, res) => {
     const { helmetId, components, remarks, assembledBy } = req.body;
 
     for (const comp of components) {
-      await QRCode.findByIdAndUpdate(comp.qrId, { 
+      await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: comp.qrId }), { 
         status: 'used_in_assembly' 
       });
     }
@@ -55,7 +56,8 @@ exports.createAssembly = async (req, res) => {
       finalQuantity: components.reduce((sum, c) => sum + (c.quantityUsed || 1), 0),
       assembledBy,
       remarks,
-      status: 'in_progress'
+      status: 'in_progress',
+      ...tenantFields(req.user)
     });
 
     await assembly.save();
@@ -68,7 +70,7 @@ exports.createAssembly = async (req, res) => {
 
 exports.updateAssembly = async (req, res) => {
   try {
-    const assembly = await Assembly.findById(req.params.id);
+    const assembly = await Assembly.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!assembly) {
       return res.status(404).json({ message: 'Assembly not found' });
     }
@@ -87,7 +89,7 @@ exports.updateAssembly = async (req, res) => {
 
 exports.finalizeAssembly = async (req, res) => {
   try {
-    const assembly = await Assembly.findById(req.params.id);
+    const assembly = await Assembly.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!assembly) {
       return res.status(404).json({ message: 'Assembly not found' });
     }
@@ -105,6 +107,9 @@ exports.finalizeAssembly = async (req, res) => {
 exports.getAssemblyStats = async (req, res) => {
   try {
     const stats = await Assembly.aggregate([
+      {
+        $match: scopedQuery(req.user, {})
+      },
       {
         $group: {
           _id: '$status',
@@ -128,6 +133,7 @@ exports.getDailyAssembly = async (req, res) => {
     const stats = await Assembly.aggregate([
       {
         $match: {
+          ...scopedQuery(req.user, {}),
           createdAt: { $gte: sevenDaysAgo }
         }
       },

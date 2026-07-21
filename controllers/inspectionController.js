@@ -9,6 +9,7 @@ const ProcessingStage = require('../models/ProcessingStage');
 const ProductStage = require('../models/ProductStage');
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const Role = require('../models/Role');
+const User = require('../models/User');
 const mongoose = require('mongoose');
 const {
   buildProductPayload,
@@ -22,6 +23,7 @@ const {
   reportIdFor,
   toKey
 } = require('../utils/reportClassification');
+const { getDealerUserIds, tenantDealerFilter } = require('../utils/tenantScope');
 
 const todayRange = () => {
   const start = new Date();
@@ -33,6 +35,32 @@ const todayRange = () => {
 
 const getEmployeeName = (user) => user?.name || user?.username || user?.email || 'Employee';
 const isRoleScopedWorker = (user) => ['employee', 'inspector'].includes(user?.role);
+
+const scopedInspectionResponseQuery = async (user, base = {}) => {
+  if (user?.role === 'superadmin') return { ...base };
+  if (user?.role === 'employee') return { ...base, employee: user._id };
+  const dealerUserIds = await getDealerUserIds(user, User);
+  if (!dealerUserIds) return { ...base, employee: user?._id };
+  return { ...base, employee: { $in: dealerUserIds } };
+};
+
+const scopedVerificationQuery = async (user, base = {}) => {
+  if (user?.role === 'superadmin') return { ...base };
+  const dealerUserIds = await getDealerUserIds(user, User);
+
+  if (user?.role === 'inspector') return { ...base, inspectorId: user._id };
+  if (!dealerUserIds) return { ...base, inspectorId: user?._id };
+
+  return {
+    ...base,
+    $or: [
+      { tenantId: user.dealerId },
+      { organizationId: user.dealerId },
+      { employeeId: { $in: dealerUserIds } },
+      { inspectorId: { $in: dealerUserIds } }
+    ]
+  };
+};
 
 const normalizeInspectionResult = (value) => String(value || '').trim().toUpperCase();
 const normalizeMovementType = (value) => String(value || 'NONE').trim().toUpperCase();
@@ -1744,15 +1772,19 @@ exports.getScanLogs = async (req, res) => {
 exports.getTraceability = async (req, res) => {
   try {
     const id = req.params.id;
-    const qrCode = await QRCode.findOne({ $or: [{ _id: id.match(/^[a-f\d]{24}$/i) ? id : undefined }, { qrId: id }, { code: id }] });
+    const qrCode = await QRCode.findOne({
+      ...tenantDealerFilter(req.user),
+      $or: [{ _id: id.match(/^[a-f\d]{24}$/i) ? id : undefined }, { qrId: id }, { code: id }]
+    });
     const code = qrCode?.code || id;
+    const responseQuery = await scopedInspectionResponseQuery(req.user, { code });
 
     const [productContext, scanLogs, responses, movements, qrCodes] = await Promise.all([
       resolveProductContext(code),
-      InspectionScanLog.find({ code }).sort({ createdAt: 1 }),
-      InspectionFormResponse.find({ code }).sort({ submittedAt: 1 }),
-      StageMovementLog.find({ code }).sort({ movedAt: 1 }),
-      QRCode.find({ code }).sort({ createdAt: 1 })
+      InspectionScanLog.find(responseQuery).sort({ createdAt: 1 }),
+      InspectionFormResponse.find(responseQuery).sort({ submittedAt: 1 }),
+      StageMovementLog.find(responseQuery).sort({ movedAt: 1 }),
+      QRCode.find({ code, ...tenantDealerFilter(req.user) }).sort({ createdAt: 1 })
     ]);
 
     res.json({
@@ -1771,7 +1803,7 @@ exports.getTraceability = async (req, res) => {
 exports.getAdminResponses = async (req, res) => {
   try {
     const { search = '', result = '', stage = '' } = req.query;
-    const query = {};
+    const query = await scopedInspectionResponseQuery(req.user, {});
     if (search) {
       query.$or = [
         { code: { $regex: search, $options: 'i' } },
@@ -1785,8 +1817,8 @@ exports.getAdminResponses = async (req, res) => {
     const responses = await InspectionFormResponse.find(query).sort({ submittedAt: -1 }).limit(200).lean();
     const enrichedResponses = await Promise.all(responses.map(async (response) => {
       const qrCode = response.qrCode
-        ? await QRCode.findById(response.qrCode).lean()
-        : await QRCode.findOne({ qrId: response.qrId }).lean();
+        ? await QRCode.findOne({ _id: response.qrCode, ...tenantDealerFilter(req.user) }).lean()
+        : await QRCode.findOne({ qrId: response.qrId, ...tenantDealerFilter(req.user) }).lean();
       const product = await getProductWithCategoryForResponse(response, qrCode);
       const category = product?.category;
       const categoryId = category?._id ? String(category._id) : '';
@@ -1852,7 +1884,7 @@ exports.getAdminResponses = async (req, res) => {
 
 exports.getResponseById = async (req, res) => {
   try {
-    const response = await InspectionFormResponse.findById(req.params.id);
+    const response = await InspectionFormResponse.findOne(await scopedInspectionResponseQuery(req.user, { _id: req.params.id }));
     if (!response) return res.status(404).json({ message: 'Response not found' });
     res.json(response);
   } catch (error) {
@@ -1862,8 +1894,10 @@ exports.getResponseById = async (req, res) => {
 
 exports.getProductionAnalytics = async (req, res) => {
   try {
+    const match = await scopedInspectionResponseQuery(req.user, {});
     const [totals, stageWise, productWise, employeeWise] = await Promise.all([
       InspectionFormResponse.aggregate([
+        { $match: match },
         {
           $group: {
             _id: null,
@@ -1874,6 +1908,7 @@ exports.getProductionAnalytics = async (req, res) => {
         }
       ]),
       InspectionFormResponse.aggregate([
+        { $match: match },
         {
           $group: {
             _id: '$stageName',
@@ -1885,6 +1920,7 @@ exports.getProductionAnalytics = async (req, res) => {
         { $sort: { _id: 1 } }
       ]),
       InspectionFormResponse.aggregate([
+        { $match: match },
         {
           $group: {
             _id: '$productName',
@@ -1897,6 +1933,7 @@ exports.getProductionAnalytics = async (req, res) => {
         { $limit: 10 }
       ]),
       InspectionFormResponse.aggregate([
+        { $match: match },
         {
           $group: {
             _id: '$employeeName',
@@ -1936,9 +1973,9 @@ exports.getRejectionReport = async (req, res) => {
     const end = new Date(year, month, 1);
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    const responses = await InspectionFormResponse.find({
+    const responses = await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, {
       submittedAt: { $gte: start, $lt: end }
-    })
+    }))
       .select('acceptedCount rejectedCount reworkCount rejectionFormResponses submittedAt')
       .lean();
 
@@ -2033,9 +2070,9 @@ exports.getMisDashboard = async (req, res) => {
     const end = new Date(year, month, 1);
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    const responses = await InspectionFormResponse.find({
+    const responses = await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, {
       submittedAt: { $gte: start, $lt: end }
-    })
+    }))
       .select([
         'productName', 'code', 'qrId', 'partDescription', 'productionLine', 'reportType',
         'processKey', 'processName', 'partKey', 'partName', 'stageNumber', 'stageName', 'formName',
@@ -2059,7 +2096,7 @@ exports.getMisDashboard = async (req, res) => {
     }));
     const reports = {};
     const productCodes = [...new Set(responses.map((response) => response.code).filter(Boolean))];
-    const productsByCode = new Map((await Product.find({ code: { $in: productCodes } })
+    const productsByCode = new Map((await Product.find({ code: { $in: productCodes }, ...tenantDealerFilter(req.user) })
       .select('code productName category subcategory')
       .populate('category', 'name')
       .populate('subcategory', 'name category')
@@ -2068,12 +2105,13 @@ exports.getMisDashboard = async (req, res) => {
       ...new Set(responses.map((response) => response.productName).filter(Boolean))
     ];
     const configsByProductName = new Map((await ManufacturingConfig.find({
-      productName: { $in: responseProductNames }
+      productName: { $in: responseProductNames },
+      ...tenantDealerFilter(req.user)
     }).lean()).map((config) => [normalizeReportText(config.productName), config]));
     const responseQrIds = [
       ...new Set(responses.map((response) => response.qrId).filter(Boolean))
     ];
-    const qrCodesByQrId = new Map((await QRCode.find({ qrId: { $in: responseQrIds } })
+    const qrCodesByQrId = new Map((await QRCode.find({ qrId: { $in: responseQrIds }, ...tenantDealerFilter(req.user) })
       .select('qrId currentStage status')
       .lean()).map((qrCode) => [qrCode.qrId, qrCode]));
 
@@ -2484,7 +2522,7 @@ exports.backfillMisClassification = async (req, res) => {
         { reportType: '' }
       ]
     };
-    const responses = await InspectionFormResponse.find(query)
+    const responses = await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, query))
       .select('productName code partDescription stageName formName productionLine reportType processKey processName partKey partName')
       .lean();
 
@@ -2517,7 +2555,7 @@ exports.backfillMisClassification = async (req, res) => {
 
 exports.syncMisTaxonomy = async (req, res) => {
   try {
-    const configs = await ManufacturingConfig.find({});
+    const configs = await ManufacturingConfig.find(tenantDealerFilter(req.user));
     let configsUpdated = 0;
     let stagesUpdated = 0;
     let stagesSkipped = 0;
@@ -2614,11 +2652,10 @@ exports.getInspectorPendingSubmissions = async (req, res) => {
     }
 
     const verifiedIds = await InspectorVerification.distinct('employeeSubmissionId');
-    const query = {
+    const query = await scopedInspectionResponseQuery(req.user, {
       _id: { $nin: verifiedIds },
       acceptedCount: { $gt: 0 }
-    };
-    if (req.user?.dealerId) query.$or = [{ dealerId: req.user.dealerId }, { dealerId: { $exists: false } }];
+    });
 
     const responses = await InspectionFormResponse.find(query)
       .sort({ submittedAt: -1, createdAt: -1 })
@@ -2654,7 +2691,7 @@ exports.submitInspectorVerification = async (req, res) => {
       return res.status(400).json({ message: 'inspectorAcceptedCount cannot be negative' });
     }
 
-    const response = await InspectionFormResponse.findById(employeeSubmissionId).lean();
+    const response = await InspectionFormResponse.findOne(await scopedInspectionResponseQuery(req.user, { _id: employeeSubmissionId })).lean();
     if (!response) return res.status(404).json({ message: 'Employee submission not found' });
 
     const allowed = await canInspectorVerifySubmission(req.user, response);
@@ -2711,9 +2748,7 @@ exports.getInspectorVerificationLogs = async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Inspector only.' });
     }
 
-    const query = {};
-    if (req.user?.role === 'inspector') query.inspectorId = req.user._id;
-    if (req.user?.dealerId) query.$or = [{ tenantId: req.user.dealerId }, { tenantId: null }];
+    const query = await scopedVerificationQuery(req.user, {});
 
     const logs = await InspectorVerification.find(query)
       .populate('employeeSubmissionId')

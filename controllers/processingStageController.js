@@ -1,11 +1,12 @@
 const ProcessingStage = require('../models/ProcessingStage');
 const QRCode = require('../models/QRCode');
 const { getManufacturingStatsByCode } = require('../utils/manufacturingStats');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getAllProcessingStages = async (req, res) => {
   try {
     const { search, code, stageNumber, status, qrId } = req.query;
-    let query = {};
+    let query = scopedQuery(req.user, {});
 
     if (search) {
       query.$or = [
@@ -30,7 +31,7 @@ exports.getAllProcessingStages = async (req, res) => {
 
 exports.getProcessingStageById = async (req, res) => {
   try {
-    const stage = await ProcessingStage.findById(req.params.id)
+    const stage = await ProcessingStage.findOne(scopedQuery(req.user, { _id: req.params.id }))
       .populate('qrId', 'qrId code');
     
     if (!stage) {
@@ -47,8 +48,8 @@ exports.createProcessingStage = async (req, res) => {
     const { qrId, code, stageNumber, stageName, inputQuantity, operator } = req.body;
 
     const existingStage = qrId
-      ? await ProcessingStage.findOne({ qrId, stageNumber })
-      : await ProcessingStage.findOne({ code, stageNumber, qrId: { $exists: false } });
+      ? await ProcessingStage.findOne(scopedQuery(req.user, { qrId, stageNumber }))
+      : await ProcessingStage.findOne(scopedQuery(req.user, { code, stageNumber, qrId: { $exists: false } }));
     if (existingStage) {
       return res.status(400).json({ message: 'Processing stage already exists for this QR code' });
     }
@@ -60,13 +61,14 @@ exports.createProcessingStage = async (req, res) => {
       stageName,
       inputQuantity,
       operator,
-      status: 'pending'
+      status: 'pending',
+      ...tenantFields(req.user)
     });
 
     await stage.save();
 
     if (qrId) {
-      await QRCode.findByIdAndUpdate(qrId, {
+      await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: qrId }), {
         status: 'processing'
       });
     }
@@ -80,7 +82,7 @@ exports.createProcessingStage = async (req, res) => {
 
 exports.updateProcessingStage = async (req, res) => {
   try {
-    const stage = await ProcessingStage.findById(req.params.id);
+    const stage = await ProcessingStage.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!stage) {
       return res.status(404).json({ message: 'Processing stage not found' });
     }
@@ -107,7 +109,7 @@ exports.updateProcessingStage = async (req, res) => {
 
 exports.completeProcessingStage = async (req, res) => {
   try {
-    const stage = await ProcessingStage.findById(req.params.id);
+    const stage = await ProcessingStage.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!stage) {
       return res.status(404).json({ message: 'Processing stage not found' });
     }
@@ -118,7 +120,7 @@ exports.completeProcessingStage = async (req, res) => {
     await stage.save();
 
     if (stage.qrId) {
-      await QRCode.findByIdAndUpdate(stage.qrId, {
+      await QRCode.findOneAndUpdate(scopedQuery(req.user, { _id: stage.qrId }), {
         status: 'completed',
         currentStage: stage.stageNumber
       });
@@ -132,7 +134,7 @@ exports.completeProcessingStage = async (req, res) => {
 
 exports.validateProcessingStage = async (req, res) => {
   try {
-    const stage = await ProcessingStage.findById(req.params.id);
+    const stage = await ProcessingStage.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!stage) {
       return res.status(404).json({ message: 'Processing stage not found' });
     }
@@ -176,7 +178,7 @@ exports.getStageReviewStats = async (req, res) => {
 
     const agg = await ProcessingStage.aggregate([
       {
-        $match: { stageNumber }
+          $match: scopedQuery(req.user, { stageNumber })
       },
       {
         $group: {
@@ -209,7 +211,7 @@ exports.getStageReviewItems = async (req, res) => {
   try {
     const stageNumber = parseInt(req.params.stageNumber);
 
-    const items = await ProcessingStage.find({ stageNumber })
+    const items = await ProcessingStage.find(scopedQuery(req.user, { stageNumber }))
       .populate('qrId', 'qrId code')
       .sort({ updatedAt: -1 });
 
@@ -222,7 +224,7 @@ exports.getStageReviewItems = async (req, res) => {
 // Admin: update a single product row review status
 exports.updateStageReview = async (req, res) => {
   try {
-    const stage = await ProcessingStage.findById(req.params.id);
+    const stage = await ProcessingStage.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!stage) {
       return res.status(404).json({ message: 'Processing stage not found' });
     }
@@ -270,6 +272,9 @@ exports.updateStageReview = async (req, res) => {
 exports.getStageStats = async (req, res) => {
   try {
     const stats = await ProcessingStage.aggregate([
+      {
+        $match: scopedQuery(req.user, {})
+      },
       {
         $group: {
           _id: '$stageNumber',

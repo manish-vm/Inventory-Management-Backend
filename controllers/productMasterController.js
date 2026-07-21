@@ -1,12 +1,15 @@
 const Product = require('../models/Product');
+const Invoice = require('../models/Invoice');
+const User = require('../models/User');
 const { syncStageOneInputQuantity } = require('../utils/processingStageInventory');
+const { scopedQuery, tenantFields, inferredProductQuery } = require('../utils/tenantScope');
 
 const normalizeCode = (value) => String(value || '').trim().toUpperCase();
 
 exports.getAllProductMasters = async (req, res) => {
   try {
     const { search, type, subType, isActive } = req.query;
-    let query = {};
+    let query = await inferredProductQuery(req.user, { isDeleted: false }, { User, Invoice });
 
     if (search) {
       query.$or = [
@@ -28,7 +31,7 @@ exports.getAllProductMasters = async (req, res) => {
 
 exports.getProductMasterById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findOne(await inferredProductQuery(req.user, { _id: req.params.id, isDeleted: false }, { User, Invoice }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -41,7 +44,7 @@ exports.getProductMasterById = async (req, res) => {
 exports.getProductMasterByCode = async (req, res) => {
   try {
     const code = normalizeCode(req.params.code);
-    const product = await Product.findOne({ code });
+    const product = await Product.findOne(await inferredProductQuery(req.user, { code, isDeleted: false }, { User, Invoice }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -57,7 +60,7 @@ exports.createProductMaster = async (req, res) => {
     const resolvedCode = normalizeCode(code);
 
     const existingProduct = await Product.findOne({
-      code: resolvedCode
+      ...scopedQuery(req.user, { code: resolvedCode })
     });
     if (existingProduct) {
       return res.status(400).json({ message: 'Code already exists' });
@@ -72,7 +75,8 @@ exports.createProductMaster = async (req, res) => {
       unitWeight,
       unit,
       numberOfItems: Number(numberOfItems || 0),
-      stockQuantity: Number(numberOfItems || 0)
+      stockQuantity: Number(numberOfItems || 0),
+      ...tenantFields(req.user)
     });
 
     await product.save();
@@ -85,7 +89,7 @@ exports.createProductMaster = async (req, res) => {
 
 exports.updateProductMaster = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -97,7 +101,7 @@ exports.updateProductMaster = async (req, res) => {
     if (resolvedCode && resolvedCode !== product.code) {
       const existing = await Product.findOne({
         _id: { $ne: product._id },
-        code: resolvedCode
+        ...scopedQuery(req.user, { code: resolvedCode })
       });
       if (existing) {
         return res.status(400).json({ message: 'Code already exists' });
@@ -127,7 +131,7 @@ exports.updateProductMaster = async (req, res) => {
 
 exports.deleteProductMaster = async (req, res) => {
   try {
-    const product = await Product.findByIdAndDelete(req.params.id);
+    const product = await Product.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -155,7 +159,7 @@ exports.uploadProductMasters = async (req, res) => {
     for (const item of products) {
       try {
         const code = normalizeCode(item.code);
-        const existing = await Product.findOne({ code });
+        const existing = await Product.findOne(scopedQuery(req.user, { code }));
         
         if (existing) {
           existing.productName = item.productName || item.description || existing.productName;
@@ -170,7 +174,8 @@ exports.uploadProductMasters = async (req, res) => {
             productName: item.productName || item.description || 'Untitled',
             description: item.description,
             type: item.type,
-            subType: item.subType
+            subType: item.subType,
+            ...tenantFields(req.user)
           });
           await product.save();
           results.created++;
@@ -188,7 +193,7 @@ exports.uploadProductMasters = async (req, res) => {
 
 exports.getProductTypes = async (req, res) => {
   try {
-    const types = await Product.distinct('type', { type: { $ne: null } });
+    const types = await Product.distinct('type', await inferredProductQuery(req.user, { type: { $ne: null }, isDeleted: false }, { User, Invoice }));
     res.json(types);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -198,7 +203,7 @@ exports.getProductTypes = async (req, res) => {
 exports.getProductSubTypes = async (req, res) => {
   try {
     const { type } = req.query;
-    let query = { subType: { $ne: null } };
+    let query = await inferredProductQuery(req.user, { subType: { $ne: null }, isDeleted: false }, { User, Invoice });
     if (type) query.type = type;
     
     const subTypes = await Product.distinct('subType', query);
