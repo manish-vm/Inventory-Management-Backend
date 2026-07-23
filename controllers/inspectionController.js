@@ -167,6 +167,7 @@ const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) =>
 
 const canEmployeeProcessStage = (employee, stageNumber) => {
   if (!isRoleScopedWorker(employee)) return true;
+  if (employee.assignedRole && (!Array.isArray(employee.assignedStages) || employee.assignedStages.length === 0)) return true;
   const assignedStageNumbers = Array.isArray(employee.assignedStages) && employee.assignedStages.length
     ? employee.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
     : [Number(employee.manufacturingLevel || 1)];
@@ -182,17 +183,18 @@ const getEmployeeRolePermission = async (employee, productId, finalStage = false
   if (!role) return { allowed: false, stageNumbers: [] };
 
   const productIdString = String(productId);
+  const directlyAssignedProducts = new Set((role.products || []).map((id) => String(id)));
   const products = (role.permissions || []).flatMap((category) =>
     category.subcategories?.length
       ? category.subcategories.flatMap((subcategory) => subcategory.products || [])
       : category.products || []
   );
   const permission = products.find((product) => String(product.productId) === productIdString);
-  if (!permission) return { allowed: false, stageNumbers: [] };
+  if (!permission && !directlyAssignedProducts.has(productIdString)) return { allowed: false, stageNumbers: [] };
 
   return {
     allowed: true,
-    stageNumbers: (permission.stages || []).map((stage) => Number(stage.stageNumber)).filter(Number.isFinite)
+    stageNumbers: (permission?.stages || []).map((stage) => Number(stage.stageNumber)).filter(Number.isFinite)
   };
 };
 
@@ -207,6 +209,9 @@ const getEmployeeAssignedProductIds = async (employee, finalStage = false) => {
     if (role) {
       (role.products || []).forEach((id) => productIds.add(String(id)));
       (role.permissions || []).forEach((category) => {
+        (category.products || []).forEach((product) => {
+          if (product.productId) productIds.add(String(product.productId));
+        });
         (category.subcategories || []).forEach((subcategory) => {
           (subcategory.products || []).forEach((product) => {
             if (product.productId) productIds.add(String(product.productId));
@@ -420,11 +425,21 @@ const getAvailableCountForStage = async (codes = [], stageNumber) => {
 const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, productId, currentStageNumber, finalStage = false }) => {
   const normalizedCodes = codes.filter(Boolean);
   const rolePermission = await getEmployeeRolePermission(employee, productId, finalStage);
+  const uniqueStages = Array.from(
+    (stages || []).reduce((rowsByNumber, stage) => {
+      const stageNumber = Number(stage?.stageNumber);
+      if (!Number.isFinite(stageNumber) || rowsByNumber.has(stageNumber)) return rowsByNumber;
+      rowsByNumber.set(stageNumber, stage);
+      return rowsByNumber;
+    }, new Map()).values()
+  ).sort((a, b) => Number(a.stageNumber) - Number(b.stageNumber));
+
   return Promise.all(
-    stages.map(async (stage) => {
+    uniqueStages.map(async (stage) => {
       const isCurrent = Number(stage.stageNumber) === Number(currentStageNumber);
+      const assignedStageNumbers = rolePermission?.stageNumbers || [];
       const isAssigned = !isRoleScopedWorker(employee)
-        || (rolePermission?.allowed && rolePermission.stageNumbers.includes(Number(stage.stageNumber)));
+        || (rolePermission?.allowed && (finalStage || assignedStageNumbers.length === 0 || assignedStageNumbers.includes(Number(stage.stageNumber))));
       const availableCount = finalStage
         ? 999999
         : normalizedCodes.length
@@ -692,7 +707,11 @@ exports.getBatchProductForEmployee = async (req, res) => {
     if (productMatch?.productName) {
       const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id, isFinalStage);
       if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-        return res.status(403).json({ message: 'This product is not assigned to your role' });
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        if (isFinalStage && !req.user.assignedFinalStageRole) {
+          return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
+        }
+        return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
       }
       const matchedProducts = await Product.find({ productName: productMatch.productName, ...productScope }).select('code').lean();
       const codes = matchedProducts.map((p) => p.code).filter(Boolean);
@@ -708,7 +727,8 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber, finalStage: isFinalStage });
 
       if (['employee', 'inspector'].includes(req.user?.role) && !stageRows.some((stage) => stage.selectable)) {
-        return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your role` });
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your ${roleLabel}` });
       }
 
       const availableCount = await getAvailableCountForStage(codes, currentStageNumber);
@@ -779,7 +799,11 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const resolvedProduct = product || productMatch;
     const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id, isFinalStage);
     if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-      return res.status(403).json({ message: 'This product is not assigned to your role' });
+      if (isFinalStage && !req.user.assignedFinalStageRole) {
+        return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
+      }
+      const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+      return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
     }
     const currentStageNumber = stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
@@ -869,7 +893,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     if (!code) return res.status(400).json({ message: 'code is required' });
     const stageNumber = Number(stageId);
     if (!Number.isFinite(stageNumber)) return res.status(400).json({ message: 'stageId is required' });
-    if (!canEmployeeProcessStage(req.user, stageNumber)) {
+    if (!finalStage && !canEmployeeProcessStage(req.user, stageNumber)) {
       return res.status(403).json({ message: 'You are not assigned to this manufacturing stage' });
     }
 
@@ -990,7 +1014,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const total = counts.accepted + counts.rejected + counts.rework;
 
     const qrCode = await QRCode.findOne({ code, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
-    const { product, stages } = await resolveProductContext(code);
+    const { product, stages } = await resolveProductContext(code, { finalStagesOnly: Boolean(finalStage) });
     const resolvedProductId = product?._id || productId;
     const isOpenIntakeStage = Number(stageNumber) === 1;
     const stageAvailableCount = await getAvailableCountForStage([code], stageNumber);
@@ -1012,6 +1036,8 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       stageName: stageName || stage?.stageName || `Stage ${stageNumber}`
     });
 
+    // --- Production-stage mutations (skip for final stages) ---
+    if (!finalStage) {
     // Update ProductStage counters based on submitted counts.
     // Keep QR logic only for trace/movement; ProductStage becomes source of truth for stage review stats.
     // NOTE: availableQuantity is expected to be initialized when ProductStage rows are created.
@@ -1092,8 +1118,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       },
       { new: true, upsert: true }
     );
-
-
+    } // end !finalStage production mutations
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
@@ -1155,9 +1180,10 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       }
     });
 
-    // Stage movement for batch:
+    // Stage movement for batch (production stages only):
     // - Use only accepted/rejected/rework counts (not QR generator "quantity" notion).
     // - Select exactly N QRCode documents currently at this stage and apply transitions.
+    if (!finalStage) {
     const currentStageIndex = stages.findIndex((s) => Number(s.stageNumber) === Number(stageNumber));
     const nextStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] : null;
 
@@ -1365,8 +1391,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         );
       }
     }
-
-
+    } // end !finalStage QR movement
 
     res.status(201).json({ message: 'Batch inspection submitted', response: responseDoc });
   } catch (error) {
@@ -2156,7 +2181,8 @@ exports.getMisDashboard = async (req, res) => {
 
     const resolveQuestionnaireLabels = (response, answer, type) => {
       const config = configsByProductName.get(normalizeReportText(response?.productName));
-      const stage = (config?.stages || []).find((item) => Number(item.stageNumber) === Number(response?.stageNumber));
+      const stageSource = response?.finalStage ? (config?.finalStages || []) : (config?.stages || []);
+      const stage = stageSource.find((item) => Number(item.stageNumber) === Number(response?.stageNumber));
       const formDefinition = type === 'rework'
         ? stage?.reviewForm?.reworkForm
         : stage?.reviewForm?.rejectionForm;
@@ -2368,25 +2394,6 @@ exports.getMisDashboard = async (req, res) => {
         : '';
       if (!primaryReportId && !dynamicReportId) continue;
 
-      const reportIds = [primaryReportId, dynamicReportId].filter(Boolean);
-      const okNotOkReportIds = [];
-      if (dynamicReportId) {
-        reportIds.push(`${dynamicReportId}-mis`);
-        reportIds.push(`${dynamicReportId}-crs`);
-        reportIds.push(`${dynamicReportId}-rejection`);
-        reportIds.push(`${dynamicReportId}-rework`);
-        okNotOkReportIds.push(`${dynamicReportId}-ok`);
-        okNotOkReportIds.push(`${dynamicReportId}-not-ok`);
-      }
-      if (classification.reportType === 'helmet-assembly') {
-        const line = normalizeReportText(classification.productionLine);
-        reportIds.push(`${line}-helmet-assembly-rejection`);
-        reportIds.push(`${line}-helmet-assembly-rework`);
-        reportIds.push(`stagewise-rejection-performance-${line}`);
-        okNotOkReportIds.push(`${line}-helmet-assembly-ok`);
-        okNotOkReportIds.push(`${line}-helmet-assembly-not-ok`);
-      }
-
       const accepted = toCount(response.acceptedCount);
       const rejected = toCount(response.rejectedCount);
       const rework = toCount(response.reworkCount);
@@ -2398,6 +2405,36 @@ exports.getMisDashboard = async (req, res) => {
       const inspectionDefects = getCountAnswers(response.responses, 'reject', classification, response);
       const rejectionDefects = getCountAnswers(response.rejectionFormResponses, 'reject', classification, response);
       const reworkDefects = getCountAnswers(response.reworkFormResponses, 'rework', classification, response);
+      const reportIds = [];
+      const okNotOkReportIds = [];
+
+      if (!isFinalStageSubmission) {
+        reportIds.push(...[primaryReportId, dynamicReportId].filter(Boolean));
+        if (dynamicReportId) {
+          reportIds.push(`${dynamicReportId}-mis`);
+          reportIds.push(`${dynamicReportId}-crs`);
+          reportIds.push(`${dynamicReportId}-rejection`);
+          reportIds.push(`${dynamicReportId}-rework`);
+        }
+        if (classification.reportType === 'helmet-assembly') {
+          const line = normalizeReportText(classification.productionLine);
+          reportIds.push(`${line}-helmet-assembly-rejection`);
+          reportIds.push(`${line}-helmet-assembly-rework`);
+          reportIds.push(`stagewise-rejection-performance-${line}`);
+        }
+      }
+
+      if (isFinalStageSubmission) {
+        if (dynamicReportId) {
+          okNotOkReportIds.push(`${dynamicReportId}-ok`);
+          okNotOkReportIds.push(`${dynamicReportId}-not-ok`);
+        }
+        if (classification.reportType === 'helmet-assembly') {
+          const line = normalizeReportText(classification.productionLine);
+          okNotOkReportIds.push(`${line}-helmet-assembly-ok`);
+          okNotOkReportIds.push(`${line}-helmet-assembly-not-ok`);
+        }
+      }
 
       for (const reportId of reportIds) {
         const report = ensureReport(reportId, classification);
@@ -2446,32 +2483,45 @@ exports.getMisDashboard = async (req, res) => {
         const partName = String(classification.partName || response.partName || response.partDescription || '').trim() || 'Assembly';
         const processName = String(classification.processName || response.processName || '').trim() || stageName;
         for (const reportId of okNotOkReportIds) {
-          const report = ensureReport(reportId, classification);
-          const day = report.days[dayIndex];
+        const report = ensureReport(reportId, classification);
+        const day = report.days[dayIndex];
+        const isOkReport = reportId.endsWith('-ok') && !reportId.endsWith('-not-ok');
+        const reportOk = isOkReport ? ok : 0;
+        const reportNotOk = isOkReport ? 0 : notOk;
           day.output += output;
-          day.ok += ok;
-          day.notOk += notOk;
-          day.accepted += accepted;
-          day.rejected += rejected;
+          day.ok += reportOk;
+          day.notOk += reportNotOk;
+          day.accepted += reportOk;
+          day.rejected += reportNotOk;
 
           report.totals.output += output;
-          report.totals.ok += ok;
-          report.totals.notOk += notOk;
-          report.totals.accepted += accepted;
-          report.totals.rejected += rejected;
+          report.totals.ok += reportOk;
+          report.totals.notOk += reportNotOk;
+          report.totals.accepted += reportOk;
+          report.totals.rejected += reportNotOk;
 
-          const isOkReport = reportId.endsWith('-ok');
-          const rowKey = `${stageName}|${partName}|${processName}|${isOkReport ? 'OK' : 'Not OK'}`;
+          const finalAnswers = isOkReport
+            ? getCountAnswers(response.responses, 'reject', classification, response)
+            : rejectionDefects;
+          if (finalAnswers.length) {
+            addAnswerProcessOutputs(report, finalAnswers, dayIndex, output);
+            addDefects(report, finalAnswers, dayIndex);
+            continue;
+          }
+
+          const rowLabel = isOkReport ? 'OK' : 'Not OK';
+          const rowValue = isOkReport ? ok : notOk;
+          const rowKey = `${stageName}|${partName}|${processName}|${rowLabel}`;
           if (!report.rows[rowKey]) {
             report.rows[rowKey] = {
               defectCode: rowKey,
               questionHeader: 'Final Stage',
-              questionAnswer: isOkReport ? 'OK' : 'Not OK',
+              questionAnswer: rowLabel,
               subQuestion: '',
               subOption: '',
               subQuestionPath: [],
               hasSubQuestion: false,
-              defectName: isOkReport ? 'OK' : 'Not OK',
+              defectName: rowLabel,
               stageName,
               assemblyProcess: processName,
               partName,
@@ -2479,8 +2529,8 @@ exports.getMisDashboard = async (req, res) => {
               total: 0
             };
           }
-          report.rows[rowKey].days[dayIndex] += isOkReport ? ok : notOk;
-          report.rows[rowKey].total += isOkReport ? ok : notOk;
+          report.rows[rowKey].days[dayIndex] += rowValue;
+          report.rows[rowKey].total += rowValue;
         }
       }
     }

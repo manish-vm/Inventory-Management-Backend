@@ -17,6 +17,8 @@ test('classifies the supported MIS report families', () => {
   assert.equal(inferReportType('visor coating inspection'), 'visor-coating');
   assert.equal(inferReportType('shell moulding'), 'shell-moulding');
   assert.equal(inferReportType('helmet assy'), 'helmet-assembly');
+  assert.equal(inferReportType('DRR'), 'helmet-assembly');
+  assert.equal(inferReportType('Helmet Assembly DRR'), 'helmet-assembly');
 });
 
 test('preserves explicit classification and generates stable keys', () => {
