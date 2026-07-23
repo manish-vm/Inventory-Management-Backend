@@ -424,7 +424,7 @@ const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, produ
     stages.map(async (stage) => {
       const isCurrent = Number(stage.stageNumber) === Number(currentStageNumber);
       const isAssigned = !isRoleScopedWorker(employee)
-        || (rolePermission?.allowed && rolePermission.stageNumbers.includes(Number(stage.stageNumber)));
+        || (rolePermission?.allowed && (finalStage || rolePermission.stageNumbers.includes(Number(stage.stageNumber))));
       const availableCount = finalStage
         ? 999999
         : normalizedCodes.length
@@ -692,7 +692,11 @@ exports.getBatchProductForEmployee = async (req, res) => {
     if (productMatch?.productName) {
       const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id, isFinalStage);
       if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-        return res.status(403).json({ message: 'This product is not assigned to your role' });
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        if (isFinalStage && !req.user.assignedFinalStageRole) {
+          return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
+        }
+        return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
       }
       const matchedProducts = await Product.find({ productName: productMatch.productName, ...productScope }).select('code').lean();
       const codes = matchedProducts.map((p) => p.code).filter(Boolean);
@@ -708,7 +712,8 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber, finalStage: isFinalStage });
 
       if (['employee', 'inspector'].includes(req.user?.role) && !stageRows.some((stage) => stage.selectable)) {
-        return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your role` });
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your ${roleLabel}` });
       }
 
       const availableCount = await getAvailableCountForStage(codes, currentStageNumber);
@@ -779,7 +784,11 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const resolvedProduct = product || productMatch;
     const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id, isFinalStage);
     if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-      return res.status(403).json({ message: 'This product is not assigned to your role' });
+      if (isFinalStage && !req.user.assignedFinalStageRole) {
+        return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
+      }
+      const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+      return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
     }
     const currentStageNumber = stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
@@ -869,7 +878,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     if (!code) return res.status(400).json({ message: 'code is required' });
     const stageNumber = Number(stageId);
     if (!Number.isFinite(stageNumber)) return res.status(400).json({ message: 'stageId is required' });
-    if (!canEmployeeProcessStage(req.user, stageNumber)) {
+    if (!finalStage && !canEmployeeProcessStage(req.user, stageNumber)) {
       return res.status(403).json({ message: 'You are not assigned to this manufacturing stage' });
     }
 
@@ -990,7 +999,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const total = counts.accepted + counts.rejected + counts.rework;
 
     const qrCode = await QRCode.findOne({ code, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
-    const { product, stages } = await resolveProductContext(code);
+    const { product, stages } = await resolveProductContext(code, { finalStagesOnly: Boolean(finalStage) });
     const resolvedProductId = product?._id || productId;
     const isOpenIntakeStage = Number(stageNumber) === 1;
     const stageAvailableCount = await getAvailableCountForStage([code], stageNumber);
@@ -1012,6 +1021,8 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       stageName: stageName || stage?.stageName || `Stage ${stageNumber}`
     });
 
+    // --- Production-stage mutations (skip for final stages) ---
+    if (!finalStage) {
     // Update ProductStage counters based on submitted counts.
     // Keep QR logic only for trace/movement; ProductStage becomes source of truth for stage review stats.
     // NOTE: availableQuantity is expected to be initialized when ProductStage rows are created.
@@ -1092,8 +1103,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       },
       { new: true, upsert: true }
     );
-
-
+    } // end !finalStage production mutations
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
@@ -1155,9 +1165,10 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       }
     });
 
-    // Stage movement for batch:
+    // Stage movement for batch (production stages only):
     // - Use only accepted/rejected/rework counts (not QR generator "quantity" notion).
     // - Select exactly N QRCode documents currently at this stage and apply transitions.
+    if (!finalStage) {
     const currentStageIndex = stages.findIndex((s) => Number(s.stageNumber) === Number(stageNumber));
     const nextStage = currentStageIndex >= 0 ? stages[currentStageIndex + 1] : null;
 
@@ -1365,8 +1376,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         );
       }
     }
-
-
+    } // end !finalStage QR movement
 
     res.status(201).json({ message: 'Batch inspection submitted', response: responseDoc });
   } catch (error) {
