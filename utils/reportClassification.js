@@ -18,6 +18,7 @@ const inferProductionLine = (...values) => {
 
 const inferReportType = (...values) => {
   const text = values.map(normalizeReportText).join(' ');
+  if (text.includes('helmet') && text.includes('drr')) return 'helmet-assembly';
   if (text.includes('visor') && text.includes('coating')) return 'visor-coating';
   if (text.includes('visor') && (text.includes('mechanism') || text.includes('vm top') || text.includes('visor top'))) {
     return 'visor-mechanism-top-moulding';
@@ -28,6 +29,7 @@ const inferReportType = (...values) => {
   if (text.includes('spoiler')) return 'spoiler-moulding';
   if (text.includes('stagewise')) return 'stagewise-rejection';
   if (text.includes('bop') || text.includes('inward')) return 'bop-parts-receipt';
+  if (/\bdrr\b/.test(text)) return 'helmet-assembly';
   if (text.includes('assembly') || text.includes('assy')) return 'helmet-assembly';
   return '';
 };
