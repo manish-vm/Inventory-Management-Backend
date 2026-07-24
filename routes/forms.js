@@ -21,8 +21,9 @@ router.get('/stage/:stageId', auth, async (req, res) => {
 
     const isFinalStage = req.query.finalStage === 'true';
 
+    const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const query = {
-      productName: resolvedProductName,
+      productName: { $regex: `^${escapeRegex(resolvedProductName)}$`, $options: 'i' },
       ...(isFinalStage
         ? { 'finalStages.stageNumber': stageId }
         : {
