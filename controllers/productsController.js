@@ -254,11 +254,11 @@ const acceptedRouteForStage = (stage, stageNumbers) => {
   return nextStage ? String(nextStage) : '';
 };
 
-const syncWorkflowTemplate = async ({ productName, code, workflowStages = [] }) => {
-  const normalizedStages = workflowStages
+const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], finalStages = [], user = null }) => {
+  const normalizedStages = (workflowStages || [])
     .map((stage, index) => ({
       stageNumber: Number(stage.stageNumber || index + 1),
-      stageName: String(stage.stageName || '').trim(),
+      stageName: String(stage.stageName || '').trim() || `Stage ${stage.stageNumber || index + 1}`,
       enabled: stage.enabled,
       accepted: stage.accepted,
       rejectionQuestion: stage.rejectionQuestion,
@@ -269,14 +269,30 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [] }) 
       reworkOptions: stage.reworkOptions
     }))
     .filter((stage) => {
-      const enabledValue = String(stage.enabled ?? stage.stageName ?? '').trim().toLowerCase();
-      return stage.stageNumber && enabledValue && !['no', 'false', '0', 'n'].includes(enabledValue);
+      const hasContent = [stage.accepted, stage.rejectionQuestion, stage.rejectionOptions, stage.reworkQuestion, stage.reworkOptions]
+        .some((v) => String(v || '').trim());
+      const enabledValue = String(stage.enabled ?? '').trim().toLowerCase();
+      return stage.stageNumber && (hasContent || !['no', 'false', '0', 'n'].includes(enabledValue));
     });
 
-  if (!normalizedStages.length) return null;
+  const normalizedFinalStages = (finalStages || [])
+    .map((stage, index) => ({
+      stageNumber: Number(stage.stageNumber || index + 1),
+      stageName: String(stage.stageName || '').trim() || `Final Stage ${index + 1}`,
+      okCount: stage.okCount,
+      notOkQuestion: stage.notOkQuestion,
+      notOkOptionType: stage.notOkOptionType,
+      notOkOptions: stage.notOkOptions
+    }))
+    .filter((stage) =>
+      [stage.stageName, stage.okCount, stage.notOkQuestion, stage.notOkOptions]
+        .some((v) => String(v || '').trim())
+    );
+
+  if (!normalizedStages.length && !normalizedFinalStages.length) return null;
 
   const stageNumbers = normalizedStages.map((stage) => stage.stageNumber).sort((a, b) => a - b);
-  const manufacturingStages = normalizedStages.map((stage, index) => {
+  let manufacturingStages = normalizedStages.map((stage, index) => {
     const rejectionQuestions = buildReviewQuestions({
       type: 'rejection',
       questionText: stage.rejectionQuestion,
@@ -291,40 +307,94 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [] }) 
     });
 
     return {
-    stageNumber: stage.stageNumber,
-    stageName: stage.stageName || stageNameFromNumber(stage.stageNumber),
-    stageType: index === 0 ? 'manufacturing' : 'processing',
-    requiresValidation: false,
-    reviewForm: {
-      questions: [],
-      rejectionForm: {
-        formId: `stage-${stage.stageNumber}-rejection-admin`,
-        formName: `${stage.stageName || stageNameFromNumber(stage.stageNumber)} Rejection Analysis Form`,
-        questions: rejectionQuestions
-      },
-      reworkForm: {
-        formId: `stage-${stage.stageNumber}-rework-admin`,
-        formName: `${stage.stageName || stageNameFromNumber(stage.stageNumber)} Rework Analysis Form`,
-        questions: reworkQuestions
-      },
-      outcomes: [
-        { status: 'accepted', routeStage: acceptedRouteForStage(stage, stageNumbers) },
-        { status: 'rejected', optionType: stage.rejectionOptionType || '', options: splitList(stage.rejectionOptions) },
-        { status: 'rework', optionType: stage.reworkOptionType || '', options: splitList(stage.reworkOptions) }
-      ]
-    }
+      stageNumber: stage.stageNumber,
+      stageName: stage.stageName || stageNameFromNumber(stage.stageNumber),
+      stageType: index === 0 ? 'manufacturing' : 'processing',
+      requiresValidation: false,
+      reviewForm: {
+        questions: [],
+        rejectionForm: {
+          formId: `stage-${stage.stageNumber}-rejection-admin`,
+          formName: `${stage.stageName || stageNameFromNumber(stage.stageNumber)} Rejection Analysis Form`,
+          questions: rejectionQuestions
+        },
+        reworkForm: {
+          formId: `stage-${stage.stageNumber}-rework-admin`,
+          formName: `${stage.stageName || stageNameFromNumber(stage.stageNumber)} Rework Analysis Form`,
+          questions: reworkQuestions
+        },
+        outcomes: [
+          { status: 'accepted', routeStage: acceptedRouteForStage(stage, stageNumbers) },
+          { status: 'rejected', optionType: stage.rejectionOptionType || '', options: splitList(stage.rejectionOptions) },
+          { status: 'rework', optionType: stage.reworkOptionType || '', options: splitList(stage.reworkOptions) }
+        ]
+      }
     };
   });
 
-  const existingConfig = await ManufacturingConfig.findOne({ productName });
+  // Ensure there is at least one regular stage if only finalStages were provided
+  if (!manufacturingStages.length) {
+    manufacturingStages = [{
+      stageNumber: 1,
+      stageName: 'Manufacturing',
+      stageType: 'manufacturing',
+      requiresValidation: false,
+      reviewForm: {
+        questions: [],
+        outcomes: [{ status: 'accepted', routeStage: '' }]
+      }
+    }];
+  }
+
+  // Build final stage config objects (OK is actual count, Not OK has questionnaire)
+  const lastRegularStageNum = stageNumbers.length ? stageNumbers[stageNumbers.length - 1] : 1;
+  const builtFinalStages = normalizedFinalStages.map((stage, index) => {
+    const notOkQuestions = buildReviewQuestions({
+      type: 'rejection',
+      questionText: stage.notOkQuestion,
+      optionType: stage.notOkOptionType,
+      options: stage.notOkOptions
+    });
+    const assignedStageNumber = lastRegularStageNum + index + 1;
+    return {
+      stageNumber: assignedStageNumber,
+      stageName: stage.stageName || `Final Stage ${index + 1}`,
+      stageType: 'processing',
+      requiresValidation: false,
+      reviewForm: {
+        questions: [],
+        okForm: {
+          formId: `final-stage-${assignedStageNumber}-ok-admin`,
+          formName: `${stage.stageName || `Final Stage ${index + 1}`} OK Analysis Form`,
+          questions: []
+        },
+        rejectionForm: {
+          formId: `final-stage-${assignedStageNumber}-notok-admin`,
+          formName: `${stage.stageName || `Final Stage ${index + 1}`} Not OK Analysis Form`,
+          questions: notOkQuestions
+        },
+        outcomes: [
+          { status: 'accepted' },
+          { status: 'rejected', optionType: stage.notOkOptionType || '', options: splitList(stage.notOkOptions) }
+        ]
+      }
+    };
+  });
+
+  const existingConfig = await ManufacturingConfig.findOne({
+    productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' }
+  });
   const workflowType = `${manufacturingStages.length}-step`;
   let workflowCreated = false;
   let configDoc;
 
   if (existingConfig) {
+    existingConfig.productName = productName;
     existingConfig.workflowType = workflowType;
     existingConfig.stages = manufacturingStages;
+    if (builtFinalStages.length) existingConfig.finalStages = builtFinalStages;
     existingConfig.isActive = true;
+    if (user?.dealerId) existingConfig.dealerId = user.dealerId;
     configDoc = await existingConfig.save();
   } else {
     workflowCreated = true;
@@ -332,7 +402,9 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [] }) 
       productName,
       workflowType,
       stages: manufacturingStages,
-      isActive: true
+      finalStages: builtFinalStages,
+      isActive: true,
+      ...tenantFields(user)
     });
   }
 
@@ -349,24 +421,62 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [] }) 
       optionType: stage.reworkOptionType,
       options: stage.reworkOptions
     });
-    const stageId = `${configDoc._id}-${stage.stageNumber}`;
 
+    const updateData = {
+      acceptedRouteStage: acceptedRouteForStage(stage, stageNumbers),
+      reworkRouteStage: '',
+      rejectionQuestionnaireEnabled: rejectionQuestions.length > 0,
+      rejectionQuestions,
+      reworkQuestionnaireEnabled: reworkQuestions.length > 0,
+      reworkQuestions
+    };
+
+    // Save with both key patterns to support both ProductReviewConfig lookups
     await StageReviewConfig.findOneAndUpdate(
-      { stageId },
-      {
-        stageId,
-        acceptedRouteStage: acceptedRouteForStage(stage, stageNumbers),
-        reworkRouteStage: '',
-        rejectionQuestionnaireEnabled: rejectionQuestions.length > 0,
-        rejectionQuestions,
-        reworkQuestionnaireEnabled: reworkQuestions.length > 0,
-        reworkQuestions
-      },
+      { stageId: `${configDoc._id}-stages-${stage.stageNumber}` },
+      { stageId: `${configDoc._id}-stages-${stage.stageNumber}`, ...updateData, ...tenantFields(user) },
+      { new: true, upsert: true }
+    );
+    await StageReviewConfig.findOneAndUpdate(
+      { stageId: `${configDoc._id}-${stage.stageNumber}` },
+      { stageId: `${configDoc._id}-${stage.stageNumber}`, ...updateData, ...tenantFields(user) },
       { new: true, upsert: true }
     );
 
     await ensureDefects('reject', stage.rejectionOptions);
     await ensureDefects('rework', stage.reworkOptions);
+  }
+
+  // Sync StageReviewConfig for each final stage (Not OK = rejection questionnaire)
+  for (const [index, stage] of normalizedFinalStages.entries()) {
+    const assignedStageNumber = lastRegularStageNum + index + 1;
+    const notOkQuestions = buildReviewQuestions({
+      type: 'rejection',
+      questionText: stage.notOkQuestion,
+      optionType: stage.notOkOptionType,
+      options: stage.notOkOptions
+    });
+
+    const updateData = {
+      configurationMode: 'finalStages',
+      rejectionQuestionnaireEnabled: notOkQuestions.length > 0,
+      rejectionQuestions: notOkQuestions,
+      reworkQuestionnaireEnabled: false,
+      reworkQuestions: []
+    };
+
+    await StageReviewConfig.findOneAndUpdate(
+      { stageId: `${configDoc._id}-finalStages-${assignedStageNumber}` },
+      { stageId: `${configDoc._id}-finalStages-${assignedStageNumber}`, ...updateData, ...tenantFields(user) },
+      { new: true, upsert: true }
+    );
+    await StageReviewConfig.findOneAndUpdate(
+      { stageId: `${configDoc._id}-${assignedStageNumber}` },
+      { stageId: `${configDoc._id}-${assignedStageNumber}`, ...updateData, ...tenantFields(user) },
+      { new: true, upsert: true }
+    );
+
+    await ensureDefects('reject', stage.notOkOptions);
   }
 
   return { created: workflowCreated };
@@ -585,7 +695,9 @@ exports.bulkUploadProducts = async (req, res) => {
         const workflowSync = await syncWorkflowTemplate({
           productName,
           code: product.code,
-          workflowStages: row.workflowStages
+          workflowStages: row.workflowStages,
+          finalStages: row.finalStages,
+          user: req.user
         });
 
         if (workflowSync) {
@@ -601,6 +713,7 @@ exports.bulkUploadProducts = async (req, res) => {
           }
         }
       } catch (error) {
+        console.error(`Bulk upload row ${index + 2} error:`, error);
         result.errors.push({ row: index + 2, error: error.message });
       }
     }
