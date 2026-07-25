@@ -104,9 +104,51 @@ exports.getConfig = async (req, res) => {
   try {
     const { stageId } = req.params;
 
-    const config = await StageReviewConfig.findOne({
+    let config = await StageReviewConfig.findOne({
       ...scopedQuery(req.user, { stageId })
     });
+
+    if (!config || (!config.rejectionQuestions?.length && !config.reworkQuestions?.length && !config.okQuestions?.length)) {
+      const parts = String(stageId).split('-');
+      const stageNum = parseStageNumber(stageId) || 1;
+      const isFinal = String(stageId).includes('finalStages');
+
+      const firstPart = parts[0];
+      let mConfig = null;
+      if (firstPart && mongoose.Types.ObjectId.isValid(firstPart)) {
+        mConfig = await ManufacturingConfig.findById(firstPart);
+      }
+      if (!mConfig && firstPart) {
+        const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        mConfig = await ManufacturingConfig.findOne({
+          productName: { $regex: `^${escapeRegex(firstPart)}$`, $options: 'i' }
+        });
+      }
+
+      if (mConfig) {
+        const stageList = isFinal ? (mConfig.finalStages || []) : (mConfig.stages || []);
+        const targetStage = stageList.find((s) => Number(s.stageNumber) === Number(stageNum)) || stageList[0];
+        if (targetStage?.reviewForm) {
+          const rf = targetStage.reviewForm;
+          const rejQs = rf.rejectionForm?.questions || [];
+          const rwkQs = rf.reworkForm?.questions || [];
+          const okQs = rf.okForm?.questions || [];
+
+          if (rejQs.length || rwkQs.length || okQs.length) {
+            config = {
+              stageId,
+              configurationMode: isFinal ? 'finalStages' : 'stages',
+              rejectionQuestionnaireEnabled: rejQs.length > 0,
+              rejectionQuestions: rejQs,
+              reworkQuestionnaireEnabled: rwkQs.length > 0,
+              reworkQuestions: rwkQs,
+              okQuestionnaireEnabled: okQs.length > 0,
+              okQuestions: okQs
+            };
+          }
+        }
+      }
+    }
 
     res.status(200).json({
       success: true,

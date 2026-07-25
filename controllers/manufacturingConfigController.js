@@ -89,15 +89,66 @@ const sendSaveError = (res, error) => {
 exports.getAllManufacturingConfigs = async (req, res) => {
   try {
     const { search, workflowType } = req.query;
-    let query = scopedQuery(req.user, {});
+    let query = {};
+    if (req.user?.role !== 'superadmin') {
+      if (req.user?.dealerId) {
+        query = {
+          $or: [
+            { dealerId: req.user.dealerId },
+            { dealerId: null },
+            { dealerId: { $exists: false } }
+          ]
+        };
+      } else {
+        query = scopedQuery(req.user, {});
+      }
+    }
 
     if (search) {
-      query.productName = { $regex: search, $options: 'i' };
+      const searchPattern = { $regex: search, $options: 'i' };
+      if (query.$or) {
+        query = {
+          $and: [
+            { $or: query.$or },
+            { productName: searchPattern }
+          ]
+        };
+      } else {
+        query.productName = searchPattern;
+      }
     }
 
     if (workflowType) query.workflowType = workflowType;
 
     const configs = await ManufacturingConfig.find(query).sort({ updatedAt: -1 });
+
+    // Auto-heal: Ensure any products missing a ManufacturingConfig get a default config automatically
+    try {
+      const products = await Product.find({ isDeleted: false }).lean();
+      const existingNameSet = new Set(configs.map((c) => String(c.productName || '').toLowerCase().trim()));
+      const missingProducts = products.filter((p) => p.productName && !existingNameSet.has(String(p.productName).toLowerCase().trim()));
+
+      if (missingProducts.length > 0) {
+        for (const p of missingProducts) {
+          try {
+            const context = productContextFromProduct(p);
+            const created = await ManufacturingConfig.create({
+              productName: p.productName,
+              workflowType: '1-step',
+              stages: normalizeStages(defaultStages, context),
+              isActive: true,
+              ...tenantFields(req.user)
+            });
+            configs.unshift(created);
+          } catch (e) {
+            // Ignore if duplicate or validation error occurs during auto-heal
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Auto-heal manufacturing configs error:', e);
+    }
+
     res.json(configs);
   } catch (error) {
     res.status(500).json({ error: error.message });
