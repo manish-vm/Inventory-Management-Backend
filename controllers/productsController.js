@@ -91,11 +91,11 @@ exports.getProductByCode = async (req, res) => {
 };
 
 // Helper: resolve brand/model IDs to strings
-const resolveBrandModelStrings = async ({ brandId, modelId, brandName, model }) => {
+const resolveBrandModelStrings = async ({ brandId, modelId, brandName, model, user }) => {
   // If IDs provided, prefer them
   if (brandId && modelId) {
-    const brand = await Brand.findById(brandId);
-    const m = await BrandModel.findById(modelId);
+    const brand = await Brand.findOne(scopedQuery(user, { _id: brandId }));
+    const m = await BrandModel.findOne(scopedQuery(user, { _id: modelId }));
 
     if (!brand) throw new Error('Brand not found');
     if (!m) throw new Error('Model not found');
@@ -139,7 +139,7 @@ const generateCode = async () => {
   return code;
 };
 
-const ensureBrandAndModel = async ({ brandName, model }) => {
+const ensureBrandAndModel = async ({ brandName, model, user }) => {
   const brandNames = splitList(brandName);
   const modelNames = splitList(model);
   const cleanBrand = brandNames[0];
@@ -150,8 +150,8 @@ const ensureBrandAndModel = async ({ brandName, model }) => {
   const brands = [];
   for (const name of brandNames) {
     const brand = await Brand.findOneAndUpdate(
-      { name },
-      { $setOnInsert: { name, isActive: true } },
+      scopedQuery(user, { name }),
+      { $setOnInsert: { name, isActive: true, ...tenantFields(user) } },
       { new: true, upsert: true }
     );
     brands.push(brand);
@@ -161,8 +161,8 @@ const ensureBrandAndModel = async ({ brandName, model }) => {
     for (const [index, modelName] of modelNames.entries()) {
       const brand = brands[index] || brands[0];
       await BrandModel.findOneAndUpdate(
-        { brandId: brand._id, name: modelName },
-        { $setOnInsert: { brandId: brand._id, name: modelName, isActive: true } },
+        scopedQuery(user, { brandId: brand._id, name: modelName }),
+        { $setOnInsert: { brandId: brand._id, name: modelName, isActive: true, ...tenantFields(user) } },
         { new: true, upsert: true }
       );
     }
@@ -174,37 +174,52 @@ const ensureBrandAndModel = async ({ brandName, model }) => {
   };
 };
 
-const ensureDefects = async (type, names) => {
+const ensureDefects = async (type, names, user) => {
   for (const name of splitList(names)) {
     await DefectDetail.findOneAndUpdate(
-      { type, name },
-      { $setOnInsert: { type, name, isActive: true } },
+      scopedQuery(user, { type, name }),
+      { $setOnInsert: { type, name, isActive: true, ...tenantFields(user) } },
       { new: true, upsert: true }
     );
   }
 };
 
-const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName }) => {
+const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, user }) => {
   const cleanCategory = String(categoryName || '').trim();
   const cleanSubcategory = String(subcategoryName || '').trim();
 
   if (!cleanCategory) return { category: undefined, subcategory: undefined };
 
   const category = await Category.findOneAndUpdate(
-    { name: cleanCategory },
-    { $setOnInsert: { name: cleanCategory, isActive: true } },
+    scopedQuery(user, { name: cleanCategory }),
+    { $setOnInsert: { name: cleanCategory, isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
   );
 
   if (!cleanSubcategory) return { category: category._id, subcategory: undefined };
 
   const subcategory = await Subcategory.findOneAndUpdate(
-    { name: cleanSubcategory, category: category._id },
-    { $setOnInsert: { name: cleanSubcategory, category: category._id, isActive: true } },
+    scopedQuery(user, { name: cleanSubcategory, category: category._id }),
+    { $setOnInsert: { name: cleanSubcategory, category: category._id, isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
   );
 
   return { category: category._id, subcategory: subcategory._id };
+};
+
+const validateCategorySelection = async ({ category, subcategory, user }) => {
+  if (category) {
+    const categoryExists = await Category.exists(scopedQuery(user, { _id: category }));
+    if (!categoryExists) throw new Error('Category not found');
+  }
+
+  if (subcategory) {
+    const subcategoryExists = await Subcategory.exists(scopedQuery(user, {
+      _id: subcategory,
+      ...(category ? { category } : {})
+    }));
+    if (!subcategoryExists) throw new Error('Subcategory not found');
+  }
 };
 
 const toBoolean = (value) =>
@@ -381,9 +396,9 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
     };
   });
 
-  const existingConfig = await ManufacturingConfig.findOne({
+  const existingConfig = await ManufacturingConfig.findOne(scopedQuery(user, {
     productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' }
-  });
+  }));
   const workflowType = `${manufacturingStages.length}-step`;
   let workflowCreated = false;
   let configDoc;
@@ -443,8 +458,8 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
       { new: true, upsert: true }
     );
 
-    await ensureDefects('reject', stage.rejectionOptions);
-    await ensureDefects('rework', stage.reworkOptions);
+    await ensureDefects('reject', stage.rejectionOptions, user);
+    await ensureDefects('rework', stage.reworkOptions, user);
   }
 
   // Sync StageReviewConfig for each final stage (Not OK = rejection questionnaire)
@@ -476,7 +491,7 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
       { new: true, upsert: true }
     );
 
-    await ensureDefects('reject', stage.notOkOptions);
+    await ensureDefects('reject', stage.notOkOptions, user);
   }
 
   return { created: workflowCreated };
@@ -527,6 +542,7 @@ exports.createProduct = async (req, res) => {
     }
 
     const requestedCode = normalizeCode(code || rootCode);
+    await validateCategorySelection({ category, subcategory, user: req.user });
 
     // Ensure uniqueness even after deletion
     if (requestedCode) {
@@ -539,8 +555,8 @@ exports.createProduct = async (req, res) => {
     }
 
     const resolved = brandId && modelId
-      ? await resolveBrandModelStrings({ brandId, modelId, brandName, model })
-      : await ensureBrandAndModel({ brandName, model });
+      ? await resolveBrandModelStrings({ brandId, modelId, brandName, model, user: req.user })
+      : await ensureBrandAndModel({ brandName, model, user: req.user });
     const resolvedCode = requestedCode || await generateCode();
 
     const product = new Product({
@@ -594,6 +610,7 @@ exports.updateProduct = async (req, res) => {
     }
 
     const requestedCode = normalizeCode(code || rootCode);
+    await validateCategorySelection({ category, subcategory, user: req.user });
 
     if (requestedCode && requestedCode !== product.code) {
       const existingProduct = await Product.findOne({
@@ -620,7 +637,7 @@ exports.updateProduct = async (req, res) => {
 
     // Update brand/model only if IDs provided
     if (brandId && modelId) {
-      const resolved = await resolveBrandModelStrings({ brandId, modelId });
+      const resolved = await resolveBrandModelStrings({ brandId, modelId, user: req.user });
       product.brandName = resolved.brandName;
       product.model = resolved.model;
     }
@@ -652,14 +669,15 @@ exports.bulkUploadProducts = async (req, res) => {
           ? parsedQuantity
           : (Array.isArray(row.workflowStages) && row.workflowStages.length ? 1 : 0);
         const withQRCode = toBoolean(row.withQRCode ?? row.withQR);
-        const resolved = await ensureBrandAndModel({ brandName: row.brandName || row.brand, model: row.model });
+        const resolved = await ensureBrandAndModel({ brandName: row.brandName || row.brand, model: row.model, user: req.user });
         const resolvedCategory = await ensureCategoryAndSubcategory({
           categoryName: row.categoryName || row.category,
-          subcategoryName: row.subcategoryName || row.subcategory
+          subcategoryName: row.subcategoryName || row.subcategory,
+          user: req.user
         });
 
-        await ensureDefects('reject', row.rejectDefects || row.rejectionDefects || row.defectRejectDetails);
-        await ensureDefects('rework', row.reworkDefects || row.defectReworkDetails);
+        await ensureDefects('reject', row.rejectDefects || row.rejectionDefects || row.defectRejectDetails, req.user);
+        await ensureDefects('rework', row.reworkDefects || row.defectReworkDetails, req.user);
 
         let product = await Product.findOne({
           ...tenantFields(req.user),
@@ -758,7 +776,7 @@ exports.getLowStockProducts = async (req, res) => {
 // @route   GET /api/products/categories/all
 exports.getCategories = async (req, res) => {
   try {
-    const categories = await Category.find({ isActive: true });
+    const categories = await Category.find(scopedQuery(req.user, { isActive: true })).sort({ name: 1 });
     res.json(categories);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -770,7 +788,7 @@ exports.getCategories = async (req, res) => {
 exports.createCategory = async (req, res) => {
   try {
     const { name, description } = req.body;
-    const category = new Category({ name, description });
+    const category = new Category({ name, description, ...tenantFields(req.user) });
     await category.save();
     res.status(201).json(category);
   } catch (error) {
@@ -783,8 +801,8 @@ exports.createCategory = async (req, res) => {
 exports.updateCategory = async (req, res) => {
   try {
     const { name, description, isActive } = req.body;
-    const category = await Category.findByIdAndUpdate(
-      req.params.id,
+    const category = await Category.findOneAndUpdate(
+      scopedQuery(req.user, { _id: req.params.id }),
       { name, description, isActive },
       { new: true }
     );
@@ -801,7 +819,7 @@ exports.updateCategory = async (req, res) => {
 // @route   DELETE /api/products/categories/:id
 exports.deleteCategory = async (req, res) => {
   try {
-    const category = await Category.findByIdAndDelete(req.params.id);
+    const category = await Category.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
@@ -816,11 +834,11 @@ exports.deleteCategory = async (req, res) => {
 exports.getSubcategories = async (req, res) => {
   try {
     const { category } = req.query;
-    let query = { isActive: true };
+    let query = scopedQuery(req.user, { isActive: true });
     if (category) {
-      query.category = category;
+      query = scopedQuery(req.user, { isActive: true, category });
     }
-    const subcategories = await Subcategory.find(query).select('name description isActive category');
+    const subcategories = await Subcategory.find(query).select('name description isActive category').sort({ name: 1 });
     res.json(subcategories);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -833,12 +851,12 @@ exports.createSubcategory = async (req, res) => {
   try {
     const { name, category, description } = req.body;
 
-    const categoryExists = await Category.findById(category);
+    const categoryExists = await Category.findOne(scopedQuery(req.user, { _id: category }));
     if (!categoryExists) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    const subcategory = new Subcategory({ name, category, description });
+    const subcategory = new Subcategory({ name, category, description, ...tenantFields(req.user) });
     await subcategory.save();
     res.status(201).json(subcategory);
   } catch (error) {
@@ -851,8 +869,8 @@ exports.createSubcategory = async (req, res) => {
 exports.updateSubcategory = async (req, res) => {
   try {
     const { name, description, isActive } = req.body;
-    const subcategory = await Subcategory.findByIdAndUpdate(
-      req.params.id,
+    const subcategory = await Subcategory.findOneAndUpdate(
+      scopedQuery(req.user, { _id: req.params.id }),
       { name, description, isActive },
       { new: true }
     );
@@ -869,7 +887,7 @@ exports.updateSubcategory = async (req, res) => {
 // @route   DELETE /api/products/subcategories/:id
 exports.deleteSubcategory = async (req, res) => {
   try {
-    const subcategory = await Subcategory.findByIdAndDelete(req.params.id);
+    const subcategory = await Subcategory.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!subcategory) {
       return res.status(404).json({ message: 'Subcategory not found' });
     }

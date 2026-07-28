@@ -1,11 +1,12 @@
 const Brand = require('../models/Brand');
 const BrandModel = require('../models/BrandModel');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 // @desc    Get all active brands
 // @route   GET /api/brands
 exports.getActiveBrands = async (req, res) => {
   try {
-    const brands = await Brand.find({ isActive: true }).sort({ name: 1 });
+    const brands = await Brand.find(scopedQuery(req.user, { isActive: true })).sort({ name: 1 });
     res.json(brands);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -19,7 +20,7 @@ exports.createBrand = async (req, res) => {
     const { name, isActive } = req.body;
     if (!name) return res.status(400).json({ message: 'Brand name is required' });
 
-    const brand = new Brand({ name, isActive: isActive ?? true });
+    const brand = new Brand({ name, isActive: isActive ?? true, ...tenantFields(req.user) });
     await brand.save();
     res.status(201).json(brand);
   } catch (error) {
@@ -36,8 +37,8 @@ exports.createBrand = async (req, res) => {
 exports.updateBrand = async (req, res) => {
   try {
     const { name, isActive } = req.body;
-    const brand = await Brand.findByIdAndUpdate(
-      req.params.id,
+    const brand = await Brand.findOneAndUpdate(
+      scopedQuery(req.user, { _id: req.params.id }),
       { ...(name !== undefined ? { name } : {}), ...(isActive !== undefined ? { isActive } : {}) },
       { new: true }
     );
@@ -56,11 +57,11 @@ exports.updateBrand = async (req, res) => {
 // @route   DELETE /api/brands/:id
 exports.deleteBrand = async (req, res) => {
   try {
-    const brand = await Brand.findByIdAndDelete(req.params.id);
+    const brand = await Brand.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!brand) return res.status(404).json({ message: 'Brand not found' });
 
     // Hard delete models too (keeps referential consistency)
-    await BrandModel.deleteMany({ brandId: brand._id });
+    await BrandModel.deleteMany(scopedQuery(req.user, { brandId: brand._id }));
 
     res.json({ message: 'Brand deleted successfully' });
   } catch (error) {
@@ -73,7 +74,10 @@ exports.deleteBrand = async (req, res) => {
 exports.getActiveModelsByBrand = async (req, res) => {
   try {
     const { brandId } = req.params;
-    const models = await BrandModel.find({ brandId, isActive: true })
+    const brand = await Brand.findOne(scopedQuery(req.user, { _id: brandId, isActive: true }));
+    if (!brand) return res.status(404).json({ message: 'Brand not found' });
+
+    const models = await BrandModel.find(scopedQuery(req.user, { brandId, isActive: true }))
       .sort({ name: 1 });
     res.json(models);
   } catch (error) {
@@ -85,7 +89,7 @@ exports.getActiveModelsByBrand = async (req, res) => {
 // @route   GET /api/brands/models
 exports.getAllActiveModels = async (req, res) => {
   try {
-    const models = await BrandModel.find({ isActive: true })
+    const models = await BrandModel.find(scopedQuery(req.user, { isActive: true }))
       .sort({ name: 1 })
       .populate('brandId', 'name');
     res.json(models);
@@ -103,10 +107,10 @@ exports.createModel = async (req, res) => {
     if (!name) return res.status(400).json({ message: 'Model name is required' });
 
     // Ensure brand exists
-    const brand = await Brand.findById(brandId);
+    const brand = await Brand.findOne(scopedQuery(req.user, { _id: brandId }));
     if (!brand) return res.status(404).json({ message: 'Brand not found' });
 
-    const model = new BrandModel({ brandId, name, isActive: isActive ?? true });
+    const model = new BrandModel({ brandId, name, isActive: isActive ?? true, ...tenantFields(req.user) });
     await model.save();
     res.status(201).json(model);
   } catch (error) {
@@ -129,9 +133,14 @@ exports.updateModel = async (req, res) => {
     };
 
     // Optional: allow changing brandId only if provided
-    if (brandId !== undefined) payload.brandId = brandId;
+    if (brandId !== undefined) {
+      const brand = await Brand.findOne(scopedQuery(req.user, { _id: brandId }));
+      if (!brand) return res.status(404).json({ message: 'Brand not found' });
+      payload.brandId = brandId;
+      Object.assign(payload, tenantFields(req.user));
+    }
 
-    const model = await BrandModel.findByIdAndUpdate(req.params.modelId, payload, { new: true });
+    const model = await BrandModel.findOneAndUpdate(scopedQuery(req.user, { _id: req.params.modelId }), payload, { new: true });
     if (!model) return res.status(404).json({ message: 'Model not found' });
 
     res.json(model);
@@ -147,7 +156,7 @@ exports.updateModel = async (req, res) => {
 // @route   DELETE /api/brands/models/:modelId
 exports.deleteModel = async (req, res) => {
   try {
-    const model = await BrandModel.findByIdAndDelete(req.params.modelId);
+    const model = await BrandModel.findOneAndDelete(scopedQuery(req.user, { _id: req.params.modelId }));
     if (!model) return res.status(404).json({ message: 'Model not found' });
     res.json({ message: 'Model deleted successfully' });
   } catch (error) {

@@ -4,6 +4,7 @@ const Category = require('../models/Category');
 const Subcategory = require('../models/Subcategory');
 const Product = require('../models/Product');
 const ManufacturingConfig = require('../models/ManufacturingConfig');
+const { scopedQuery } = require('../utils/tenantScope');
 
 const scopeFor = (user) => ({ dealerId: user.dealerId || null });
 const ids = (values) => [...new Set((Array.isArray(values) ? values : []).map(String))];
@@ -15,8 +16,8 @@ const buildPermissionTree = async (user, stageType = 'stages') => {
   }
 
   const [categoryRecords, subcategoryRecords, products] = await Promise.all([
-    Category.find({ isActive: true }).sort({ name: 1 }).lean(),
-    Subcategory.find({ isActive: true }).sort({ name: 1 }).lean(),
+    Category.find(scopedQuery(user, { isActive: true })).sort({ name: 1 }).lean(),
+    Subcategory.find(scopedQuery(user, { isActive: true })).sort({ name: 1 }).lean(),
     Product.find(productQuery)
       .populate('category', 'name isActive')
       .populate('subcategory', 'name category isActive')

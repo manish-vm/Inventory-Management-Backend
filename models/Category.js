@@ -7,11 +7,18 @@ const makeSlug = (value) => String(value || '')
   .replace(/^-+|-+$/g, '');
 
 const categorySchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
-  slug: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
+  name: { type: String, required: true, trim: true },
+  slug: { type: String, sparse: true, trim: true, lowercase: true },
   description: { type: String },
+  dealerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer', default: null },
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
+
+categorySchema.index(
+  { dealerId: 1, name: 1 },
+  { unique: true, collation: { locale: 'en', strength: 2 } }
+);
+categorySchema.index({ dealerId: 1, slug: 1 }, { unique: true, sparse: true });
 
 categorySchema.pre('save', function(next) {
   if (!this.slug) this.slug = makeSlug(this.name);

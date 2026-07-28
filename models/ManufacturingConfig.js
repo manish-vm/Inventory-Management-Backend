@@ -4,8 +4,7 @@ const manufacturingConfigSchema = new mongoose.Schema({
   productName: { 
     type: String, 
     required: true,
-    trim: true,
-    unique: true
+    trim: true
   },
   workflowType: { 
     type: String, 
@@ -67,6 +66,8 @@ const manufacturingConfigSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+manufacturingConfigSchema.index({ dealerId: 1, productName: 1 });
+manufacturingConfigSchema.index({ productName: 1 });
 manufacturingConfigSchema.index({ workflowType: 1 });
 
 module.exports = mongoose.model('ManufacturingConfig', manufacturingConfigSchema);

@@ -3,6 +3,7 @@ const StageReviewSubmission = require("../models/StageReviewSubmission");
 const { getManufacturingStatsByCode } = require("../utils/manufacturingStats");
 const ManufacturingConfig = require("../models/ManufacturingConfig");
 const User = require("../models/User");
+const mongoose = require("mongoose");
 const {
   scopedQuery,
   tenantFields,
@@ -116,13 +117,13 @@ exports.getConfig = async (req, res) => {
       const firstPart = parts[0];
       let mConfig = null;
       if (firstPart && mongoose.Types.ObjectId.isValid(firstPart)) {
-        mConfig = await ManufacturingConfig.findById(firstPart);
+        mConfig = await ManufacturingConfig.findOne(scopedQuery(req.user, { _id: firstPart }));
       }
       if (!mConfig && firstPart) {
         const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        mConfig = await ManufacturingConfig.findOne({
+        mConfig = await ManufacturingConfig.findOne(scopedQuery(req.user, {
           productName: { $regex: `^${escapeRegex(firstPart)}$`, $options: 'i' }
-        });
+        }));
       }
 
       if (mConfig) {

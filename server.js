@@ -24,6 +24,8 @@ const processingStageRoutes = require('./routes/processingStage');
 const assemblyRoutes = require('./routes/assembly');
 const brandModelRoutes = require('./routes/brandModel');
 const ManufacturingConfig = require('./models/ManufacturingConfig');
+const Category = require('./models/Category');
+const Subcategory = require('./models/Subcategory');
 const stageReviewConfigRoutes = require("./routes/stageReviewConfigRoutes");
 const inspectionRoutes = require('./routes/inspection');
 const formRoutes = require('./routes/forms');
@@ -112,17 +114,18 @@ app.use((req, res) => {
 // Connect to MongoDB and start server
 const startServer = async () => {
   try {
-    await mongoose.connect(MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    await mongoose.connect(MONGODB_URI);
     console.log('Connected to MongoDB');
 
     try {
-      await ManufacturingConfig.syncIndexes();
-      console.log('Manufacturing config indexes synced');
+      await Promise.all([
+        ManufacturingConfig.syncIndexes(),
+        Category.syncIndexes(),
+        Subcategory.syncIndexes()
+      ]);
+      console.log('Model indexes synced');
     } catch (indexError) {
-      console.error('Failed to sync manufacturing config indexes:', indexError);
+      console.error('Failed to sync model indexes:', indexError);
     }
 
     app.listen(PORT, () => {
