@@ -39,8 +39,9 @@ const isRoleScopedWorker = (user) => ['employee', 'inspector'].includes(user?.ro
 const scopedInspectionResponseQuery = async (user, base = {}) => {
   if (user?.role === 'superadmin') return { ...base };
   if (user?.role === 'employee') return { ...base, employee: user._id };
+
   const dealerUserIds = await getDealerUserIds(user, User);
-  if (!dealerUserIds) return { ...base, employee: user?._id };
+  if (!dealerUserIds) return { ...base, _id: null };
   return { ...base, employee: { $in: dealerUserIds } };
 };
 
@@ -49,7 +50,7 @@ const scopedVerificationQuery = async (user, base = {}) => {
   const dealerUserIds = await getDealerUserIds(user, User);
 
   if (user?.role === 'inspector') return { ...base, inspectorId: user._id };
-  if (!dealerUserIds) return { ...base, inspectorId: user?._id };
+  if (!dealerUserIds) return { ...base, _id: null };
 
   return {
     ...base,
@@ -62,6 +63,16 @@ const scopedVerificationQuery = async (user, base = {}) => {
   };
 };
 
+const addAndCondition = (query, condition) => {
+  if (!condition || !Object.keys(condition).length) return query;
+  if (query.$and) {
+    query.$and.push(condition);
+    return query;
+  }
+  query.$and = [condition];
+  return query;
+};
+
 const normalizeInspectionResult = (value) => String(value || '').trim().toUpperCase();
 const normalizeMovementType = (value) => String(value || 'NONE').trim().toUpperCase();
 const toCount = (value) => Math.max(0, Number(value) || 0);
@@ -72,7 +83,7 @@ const summarizeResponses = (responses = []) =>
     .join('; ');
 const stageLabel = (stageNumber, stage) => stage?.stageName || `Stage ${stageNumber}`;
 
-const getProductWithCategoryForResponse = async (response, qrCode) => {
+const getProductWithCategoryForResponse = async (response, qrCode, user) => {
   const codeCandidates = [
     qrCode?.code,
     response?.code,
@@ -85,6 +96,7 @@ const getProductWithCategoryForResponse = async (response, qrCode) => {
   if (!codeCandidates.length && !productName) return null;
 
   const directProduct = await Product.findOne({
+    ...tenantDealerFilter(user),
     $or: [
       ...codeCandidates.map((code) => ({ code })),
       ...(productName ? [{ productName }] : [])
@@ -94,18 +106,18 @@ const getProductWithCategoryForResponse = async (response, qrCode) => {
     .lean();
   if (directProduct) return directProduct;
 
-  const item = await ProductItem.findOne({ code: { $in: codeCandidates } }).lean();
+  const item = await ProductItem.findOne({ code: { $in: codeCandidates }, ...tenantDealerFilter(user) }).lean();
   if (!item) return null;
 
   if (item.rootProductId) {
-    const productById = await Product.findById(item.rootProductId)
+    const productById = await Product.findOne({ _id: item.rootProductId, ...tenantDealerFilter(user) })
       .populate('category', 'name')
       .lean();
     if (productById) return productById;
   }
 
   if (item.rootCode) {
-    return Product.findOne({ code: item.rootCode })
+    return Product.findOne({ code: item.rootCode, ...tenantDealerFilter(user) })
       .populate('category', 'name')
       .lean();
   }
@@ -174,9 +186,14 @@ const canEmployeeProcessStage = (employee, stageNumber) => {
   return assignedStageNumbers.includes(Number(stageNumber));
 };
 
+const roleIdForInspectionScope = (employee, finalStage = false) => {
+  if (!finalStage) return employee.assignedRole;
+  return employee.role === 'inspector' ? employee.assignedRole : employee.assignedFinalStageRole;
+};
+
 const getEmployeeRolePermission = async (employee, productId, finalStage = false) => {
   if (!isRoleScopedWorker(employee)) return null;
-  const roleId = finalStage ? employee.assignedFinalStageRole : employee.assignedRole;
+  const roleId = roleIdForInspectionScope(employee, finalStage);
   if (!roleId || !productId) return { allowed: false, stageNumbers: [] };
 
   const role = await Role.findById(roleId).lean();
@@ -203,7 +220,7 @@ const getEmployeeAssignedProductIds = async (employee, finalStage = false) => {
 
   const productIds = new Set();
 
-  const roleId = finalStage ? employee.assignedFinalStageRole : employee.assignedRole;
+  const roleId = roleIdForInspectionScope(employee, finalStage);
   if (roleId) {
     const role = await Role.findById(roleId).select('products permissions').lean();
     if (role) {
@@ -229,10 +246,10 @@ const normalizeObjectIdString = (value) => {
   return mongoose.Types.ObjectId.isValid(raw) ? raw : '';
 };
 
-const getResponseProduct = async (response) => {
+const getResponseProduct = async (response, user) => {
   const productObjectId = normalizeObjectIdString(response?.productId);
   if (productObjectId) {
-    const product = await Product.findById(productObjectId).select('code productName').lean();
+    const product = await Product.findOne({ _id: productObjectId, ...tenantDealerFilter(user) }).select('code productName').lean();
     if (product) return product;
   }
 
@@ -242,6 +259,7 @@ const getResponseProduct = async (response) => {
   if (!candidates.length) return null;
 
   return Product.findOne({
+    ...tenantDealerFilter(user),
     $or: [
       { code: { $in: candidates } },
       { productName: { $in: candidates } }
@@ -258,7 +276,7 @@ const canInspectorVerifySubmission = async (inspector, response) => {
   if (assignedProductIds === null) return true;
   if (!assignedProductIds.length) return false;
 
-  const product = await getResponseProduct(response);
+  const product = await getResponseProduct(response, inspector);
   if (!product?._id) return false;
   return assignedProductIds.includes(String(product._id));
 };
@@ -572,7 +590,7 @@ exports.getProductForEmployee = async (req, res) => {
         ...payload.productInfo,
         batchNo: qrCode.batchNo || '',
         itemId: qrCode.qrId,
-        totalIdealItems: await QRCode.countDocuments({ code: qrCode.code }),
+        totalIdealItems: await QRCode.countDocuments({ code: qrCode.code, ...tenantDealerFilter(req.user) }),
         createdDate: qrCode.createdAt,
         nextStage: payload.stages.find((stage) => Number(stage.stageNumber) === Number(payload.currentStage.stageNumber) + 1)?.stageName || 'Final Stage'
       },
@@ -580,7 +598,7 @@ exports.getProductForEmployee = async (req, res) => {
       stages: payload.stages,
       forms: payload.forms,
       itemState: payload.itemState,
-      history: await InspectionFormResponse.find({ qrId: qrCode.qrId }).sort({ submittedAt: -1 }).limit(10),
+      history: await InspectionFormResponse.find(await scopedInspectionResponseQuery(req.user, { qrId: qrCode.qrId })).sort({ submittedAt: -1 }).limit(10),
       qrCode: payload.qrCode
     });
   } catch (error) {
@@ -707,8 +725,8 @@ exports.getBatchProductForEmployee = async (req, res) => {
     if (productMatch?.productName) {
       const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id, isFinalStage);
       if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
-        if (isFinalStage && !req.user.assignedFinalStageRole) {
+        const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
+        if (isFinalStage && req.user?.role !== 'inspector' && !req.user.assignedFinalStageRole) {
           return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
         }
         return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
@@ -727,7 +745,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber, finalStage: isFinalStage });
 
       if (['employee', 'inspector'].includes(req.user?.role) && !stageRows.some((stage) => stage.selectable)) {
-        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
         return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your ${roleLabel}` });
       }
 
@@ -799,10 +817,10 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const resolvedProduct = product || productMatch;
     const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id, isFinalStage);
     if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-      if (isFinalStage && !req.user.assignedFinalStageRole) {
+      if (isFinalStage && req.user?.role !== 'inspector' && !req.user.assignedFinalStageRole) {
         return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
       }
-      const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+      const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
       return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
     }
     const currentStageNumber = stages[0]?.stageNumber || 1;
@@ -1625,7 +1643,10 @@ exports.submitEmployeeInspectionResponse = async (req, res) => {
 exports.getProductHistoryByItem = async (req, res) => {
   try {
     const { itemId } = req.params;
-    const qrCode = await QRCode.findOne({ $or: [{ qrId: itemId }, { code: itemId }, { batchNo: itemId }] });
+    const qrCode = await QRCode.findOne({
+      ...tenantDealerFilter(req.user),
+      $or: [{ qrId: itemId }, { code: itemId }, { batchNo: itemId }]
+    });
     if (!qrCode) return res.status(404).json({ message: 'Product item not found' });
     req.params.id = qrCode.qrId;
     return exports.getTraceability(req, res);
@@ -1718,7 +1739,7 @@ exports.getScanLogs = async (req, res) => {
 
 
         const [totalIdealProductCount, acceptedCount, rejectedCount, reworkCount] = await Promise.all([
-          QRCode.countDocuments({ code: { $in: relatedCodes } }),
+          QRCode.countDocuments({ code: { $in: relatedCodes }, ...tenantDealerFilter(req.user) }),
           InspectionFormResponse.aggregate([
             { $match: { code: { $in: relatedCodes }, ...employeeMatch } },
             { $group: { _id: null, count: { $sum: '$acceptedCount' } } }
@@ -1830,11 +1851,13 @@ exports.getAdminResponses = async (req, res) => {
     const { search = '', result = '', stage = '' } = req.query;
     const query = await scopedInspectionResponseQuery(req.user, {});
     if (search) {
-      query.$or = [
+      addAndCondition(query, {
+        $or: [
         { code: { $regex: search, $options: 'i' } },
         { productName: { $regex: search, $options: 'i' } },
         { employeeName: { $regex: search, $options: 'i' } }
-      ];
+        ]
+      });
     }
     if (result) query.inspectionResult = result;
     if (stage) query.stageNumber = Number(stage);
@@ -1844,7 +1867,7 @@ exports.getAdminResponses = async (req, res) => {
       const qrCode = response.qrCode
         ? await QRCode.findOne({ _id: response.qrCode, ...tenantDealerFilter(req.user) }).lean()
         : await QRCode.findOne({ qrId: response.qrId, ...tenantDealerFilter(req.user) }).lean();
-      const product = await getProductWithCategoryForResponse(response, qrCode);
+      const product = await getProductWithCategoryForResponse(response, qrCode, req.user);
       const category = product?.category;
       const categoryId = category?._id ? String(category._id) : '';
       const categoryName = category?.name || '';
@@ -2701,7 +2724,10 @@ exports.getInspectorPendingSubmissions = async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Inspector only.' });
     }
 
-    const verifiedIds = await InspectorVerification.distinct('employeeSubmissionId');
+    const verifiedIds = await InspectorVerification.distinct(
+      'employeeSubmissionId',
+      await scopedVerificationQuery(req.user, {})
+    );
     const query = await scopedInspectionResponseQuery(req.user, {
       _id: { $nin: verifiedIds },
       acceptedCount: { $gt: 0 }
@@ -2759,7 +2785,8 @@ exports.submitInspectorVerification = async (req, res) => {
     const verificationStatus = getVerificationStatus(difference);
     const processingStage = await ProcessingStage.findOne({
       code: response.code,
-      stageNumber: response.stageNumber
+      stageNumber: response.stageNumber,
+      ...tenantDealerFilter(req.user)
     }).sort({ processedAt: -1, createdAt: -1 }).lean();
 
     const verification = await InspectorVerification.create({

@@ -43,7 +43,6 @@ const assemblySchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-assemblySchema.index({ assemblyNo: 1 });
 assemblySchema.index({ status: 1 });
 
 module.exports = mongoose.model('Assembly', assemblySchema);

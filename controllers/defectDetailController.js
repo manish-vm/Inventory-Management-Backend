@@ -1,5 +1,6 @@
 const DefectDetail = require('../models/DefectDetail');
 const { toKey } = require('../utils/reportClassification');
+const { scopedQuery, tenantFields } = require('../utils/tenantScope');
 
 exports.getDefects = async (req, res) => {
   try {
@@ -13,7 +14,7 @@ exports.getDefects = async (req, res) => {
     for (const field of ['productionLine', 'reportType', 'processKey', 'partKey']) {
       if (req.query[field]) query[field] = { $in: ['', req.query[field]] };
     }
-    const defects = await DefectDetail.find(query).sort({ sortOrder: 1, type: 1, name: 1 });
+    const defects = await DefectDetail.find(scopedQuery(req.user, query)).sort({ sortOrder: 1, type: 1, name: 1 });
     res.json(defects);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -29,8 +30,8 @@ exports.createDefect = async (req, res) => {
     if (!name) return res.status(400).json({ message: 'name is required' });
 
     const defect = await DefectDetail.findOneAndUpdate(
-      { type, name: String(name).trim() },
-      { $set: { type, name: String(name).trim(), isActive: isActive ?? true, ...classification } },
+      scopedQuery(req.user, { type, name: String(name).trim() }),
+      { $set: { type, name: String(name).trim(), isActive: isActive ?? true, ...classification, ...tenantFields(req.user) } },
       { new: true, upsert: true }
     );
     res.status(201).json(defect);
@@ -47,7 +48,7 @@ exports.updateDefect = async (req, res) => {
     const update = { ...req.body };
     if (update.processName && !update.processKey) update.processKey = toKey(update.processName);
     if (update.partName && !update.partKey) update.partKey = toKey(update.partName);
-    const defect = await DefectDetail.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+    const defect = await DefectDetail.findOneAndUpdate(scopedQuery(req.user, { _id: req.params.id }), update, { new: true, runValidators: true });
     if (!defect) return res.status(404).json({ message: 'Defect detail not found' });
     res.json(defect);
   } catch (error) {
@@ -57,7 +58,7 @@ exports.updateDefect = async (req, res) => {
 
 exports.deleteDefect = async (req, res) => {
   try {
-    const defect = await DefectDetail.findByIdAndDelete(req.params.id);
+    const defect = await DefectDetail.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
     if (!defect) return res.status(404).json({ message: 'Defect detail not found' });
     res.json({ message: 'Defect detail deleted successfully' });
   } catch (error) {

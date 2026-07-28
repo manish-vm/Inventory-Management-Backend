@@ -47,7 +47,7 @@ exports.createEmployee = async (req, res) => {
       assignedStages = stagesFromRole(role);
     }
 
-    if (assignedFinalStageRole) {
+    if (userRole !== 'inspector' && assignedFinalStageRole) {
       finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, 'finalStages');
       if (!finalStageRole) return res.status(400).json({ message: 'Selected final stages role is invalid or unavailable' });
       assignedFinalStages = stagesFromRole(finalStageRole);
@@ -124,7 +124,10 @@ exports.updateEmployee = async (req, res) => {
         employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
       }
     }
-    if (assignedFinalStageRole !== undefined) {
+    if (employee.role === 'inspector') {
+      employee.assignedFinalStageRole = null;
+      employee.assignedFinalStages = [];
+    } else if (assignedFinalStageRole !== undefined) {
       if (!assignedFinalStageRole) {
         employee.assignedFinalStageRole = null;
         employee.assignedFinalStages = [];

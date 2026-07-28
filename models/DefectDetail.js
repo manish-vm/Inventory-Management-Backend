@@ -19,13 +19,14 @@ const defectDetailSchema = new mongoose.Schema({
   partKey: { type: String, default: '' },
   partName: { type: String, default: '' },
   sortOrder: { type: Number, default: 0 },
+  dealerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer', default: null },
   isActive: {
     type: Boolean,
     default: true
   }
 }, { timestamps: true });
 
-defectDetailSchema.index({ type: 1, name: 1 }, { unique: true });
-defectDetailSchema.index({ productionLine: 1, reportType: 1, processKey: 1, partKey: 1, sortOrder: 1 });
+defectDetailSchema.index({ dealerId: 1, type: 1, name: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
+defectDetailSchema.index({ dealerId: 1, productionLine: 1, reportType: 1, processKey: 1, partKey: 1, sortOrder: 1 });
 
 module.exports = mongoose.model('DefectDetail', defectDetailSchema);
