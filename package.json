@@ -1,28 +1,32 @@
 {
-  "name": "inventory-billing-backend",
-  "version": "1.0.0",
-  "description": "Billing & Inventory Management System Backend",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "seed": "node seedSuperAdmin.js && node seedPlans.js",
-    "seed:admin": "node seedSuperAdmin.js",
-    "seed:plans": "node seedPlans.js",
-    "seed:mis": "node seedMISData.js",
-    "test": "node tests/reportClassification.test.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.0.3",
-    "pdfkit": "^0.17.2",
-    "qrcode": "^1.5.4"
-  },
-  "engines": {
-    "node": ">=14.0.0"
-  }
+    "name":  "inventory-billing-backend",
+    "version":  "1.0.0",
+    "description":  "Billing \u0026 Inventory Management System Backend",
+    "main":  "server.js",
+    "scripts":  {
+                    "start":  "node server.js",
+                    "dev":  "node server.js",
+                    "seed":  "node seedSuperAdmin.js \u0026\u0026 node seedPlans.js",
+                    "seed:admin":  "node seedSuperAdmin.js",
+                    "seed:plans":  "node seedPlans.js",
+                    "seed:mis":  "node seedMISData.js",
+                    "test":  "node tests/reportClassification.test.js",
+                    "clear:operations-only":  "node clearOperationsOnly.js",
+                    "clear:operations-only:dry-run":  "node clearOperationsOnly.js --dry-run",
+                    "clear:all-except-users":  "node clearOperationsOnly.js",
+                    "clear:all-except-users:dry-run":  "node clearOperationsOnly.js --dry-run"
+                },
+    "dependencies":  {
+                         "bcryptjs":  "^2.4.3",
+                         "cors":  "^2.8.5",
+                         "dotenv":  "^16.3.1",
+                         "express":  "^4.18.2",
+                         "jsonwebtoken":  "^9.0.2",
+                         "mongoose":  "^8.0.3",
+                         "pdfkit":  "^0.17.2",
+                         "qrcode":  "^1.5.4"
+                     },
+    "engines":  {
+                    "node":  "\u003e=14.0.0"
+                }
 }

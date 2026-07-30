@@ -26,6 +26,7 @@ const brandModelRoutes = require('./routes/brandModel');
 const ManufacturingConfig = require('./models/ManufacturingConfig');
 const Category = require('./models/Category');
 const Subcategory = require('./models/Subcategory');
+const Product = require('./models/Product');
 const stageReviewConfigRoutes = require("./routes/stageReviewConfigRoutes");
 const inspectionRoutes = require('./routes/inspection');
 const formRoutes = require('./routes/forms');
@@ -119,6 +120,7 @@ const startServer = async () => {
 
     try {
       await Promise.all([
+        Product.syncIndexes(),
         ManufacturingConfig.syncIndexes(),
         Category.syncIndexes(),
         Subcategory.syncIndexes()

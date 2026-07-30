@@ -3,6 +3,7 @@ const router = express.Router();
 const { auth } = require('../middleware/authMiddleware');
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const Product = require('../models/Product');
+const { scopedQuery } = require('../utils/tenantScope');
 
 router.get('/stage/:stageId', auth, async (req, res) => {
   try {
@@ -11,7 +12,7 @@ router.get('/stage/:stageId', auth, async (req, res) => {
 
     let resolvedProductName = productName;
     if (!resolvedProductName && code) {
-      const product = await Product.findOne({ code });
+      const product = await Product.findOne(scopedQuery(req.user, { code, isDeleted: false }));
       resolvedProductName = product?.productName;
     }
 
@@ -22,7 +23,7 @@ router.get('/stage/:stageId', auth, async (req, res) => {
     const isFinalStage = req.query.finalStage === 'true';
 
     const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const query = {
+    const query = scopedQuery(req.user, {
       productName: { $regex: `^${escapeRegex(resolvedProductName)}$`, $options: 'i' },
       ...(isFinalStage
         ? { 'finalStages.stageNumber': stageId }
@@ -32,7 +33,7 @@ router.get('/stage/:stageId', auth, async (req, res) => {
               { 'finalStages.stageNumber': stageId }
             ]
           })
-    };
+    });
 
     const config = await ManufacturingConfig.findOne(query);
     const stage = isFinalStage

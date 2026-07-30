@@ -2,8 +2,8 @@ const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
   productName: { type: String, required: true },
-  code: { type: String, unique: true, sparse: true, trim: true },
-  slug: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
+  code: { type: String, sparse: true, trim: true },
+  slug: { type: String, sparse: true, trim: true, lowercase: true },
   description: { type: String },
 
   // Only the fields required by your product concept
@@ -31,6 +31,14 @@ const productSchema = new mongoose.Schema({
   deletedAt: { type: Date, default: null }
 }, { timestamps: true });
 
+// Product identifiers are unique only inside a vendor/admin tenant. Different
+// dealers can upload the same Excel with the same product codes/names/slugs.
+productSchema.index({ dealerId: 1, code: 1 }, { unique: true, sparse: true });
+productSchema.index({ dealerId: 1, slug: 1 }, { unique: true, sparse: true });
+productSchema.index(
+  { dealerId: 1, productName: 1 },
+  { collation: { locale: 'en', strength: 2 } }
+);
 
 const normalizeCode = (value) => String(value || '').trim().toUpperCase();
 const normalizeSlug = (value) => String(value || '')
