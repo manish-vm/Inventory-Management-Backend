@@ -51,6 +51,48 @@ const parseStageNumber = (stageId) => {
   return null;
 };
 
+const resolveStageContext = async (user, stageId, configurationMode = 'stages') => {
+  const raw = String(stageId || '');
+  const parts = raw.split('-');
+  const configId = parts[0];
+  const modeFromStageId = raw.includes('-finalStages-') ? 'finalStages' : configurationMode;
+  const stageNumber = parseStageNumber(stageId);
+
+  if (!mongoose.Types.ObjectId.isValid(configId)) {
+    return {
+      configurationMode: modeFromStageId === 'finalStages' ? 'finalStages' : 'stages',
+      stageNumber,
+      stageName: ''
+    };
+  }
+
+  const mConfig = await ManufacturingConfig.findOne(scopedQuery(user, { _id: configId })).lean();
+  if (!mConfig) {
+    return {
+      configId,
+      configurationMode: modeFromStageId === 'finalStages' ? 'finalStages' : 'stages',
+      stageNumber,
+      stageName: ''
+    };
+  }
+
+  const stageList = modeFromStageId === 'finalStages' ? (mConfig.finalStages || []) : (mConfig.stages || []);
+  const stage = stageList.find((item) => Number(item.stageNumber) === Number(stageNumber));
+  const Product = require("../models/Product");
+  const product = await Product.findOne(scopedQuery(user, {
+    productName: mConfig.productName,
+    isDeleted: false
+  })).select('_id').lean();
+
+  return {
+    productId: product?._id || null,
+    configId: mConfig._id,
+    configurationMode: modeFromStageId === 'finalStages' ? 'finalStages' : 'stages',
+    stageNumber,
+    stageName: stage?.stageName || ''
+  };
+};
+
 exports.createOrUpdateConfig = async (req, res) => {
   try {
     const { stageId } = req.params;
@@ -66,13 +108,17 @@ exports.createOrUpdateConfig = async (req, res) => {
       reworkQuestionnaireEnabled,
       reworkQuestions
     } = req.body;
+    const stageContext = await resolveStageContext(req.user, stageId, configurationMode);
 
     const config = await StageReviewConfig.findOneAndUpdate(
-      scopedQuery(req.user, { stageId }),
+      scopedQuery(req.user, {
+        stageId,
+        ...(stageContext.productId ? { productId: stageContext.productId } : {})
+      }),
       {
         stageId,
+        ...stageContext,
         ...tenantFields(req.user),
-        configurationMode: configurationMode === 'finalStages' ? 'finalStages' : 'stages',
         acceptedRouteStage: acceptedRouteStage || "",
         reworkRouteStage: reworkRouteStage || "",
         okQuestionnaireEnabled: Boolean(okQuestionnaireEnabled),
@@ -104,9 +150,13 @@ exports.createOrUpdateConfig = async (req, res) => {
 exports.getConfig = async (req, res) => {
   try {
     const { stageId } = req.params;
+    const stageContext = await resolveStageContext(req.user, stageId);
 
     let config = await StageReviewConfig.findOne({
-      ...scopedQuery(req.user, { stageId })
+      ...scopedQuery(req.user, {
+        stageId,
+        ...(stageContext.productId ? { productId: stageContext.productId } : {})
+      })
     });
 
     if (!config || (!config.rejectionQuestions?.length && !config.reworkQuestions?.length && !config.okQuestions?.length)) {

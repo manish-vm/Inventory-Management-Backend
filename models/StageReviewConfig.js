@@ -54,6 +54,31 @@ const StageReviewConfigSchema = new mongoose.Schema({
     required: true
   },
 
+  // Questionnaire ownership must be product scoped. A stage name such as
+  // "Moulding Defects" can exist on many products, but these fields keep each
+  // product-stage questionnaire isolated.
+  productId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Product",
+    default: null
+  },
+
+  configId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "ManufacturingConfig",
+    default: null
+  },
+
+  stageNumber: {
+    type: Number,
+    default: null
+  },
+
+  stageName: {
+    type: String,
+    default: ""
+  },
+
   dealerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Dealer",
@@ -99,6 +124,9 @@ const StageReviewConfigSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+StageReviewConfigSchema.index({ dealerId: 1, productId: 1, stageId: 1 });
+StageReviewConfigSchema.index({ dealerId: 1, configId: 1, configurationMode: 1, stageNumber: 1 });
 
 module.exports = mongoose.model(
   "StageReviewConfig",

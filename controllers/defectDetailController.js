@@ -33,7 +33,7 @@ exports.createDefect = async (req, res) => {
       scopedQuery(req.user, { type, name: String(name).trim() }),
       { $set: { type, name: String(name).trim(), isActive: isActive ?? true, ...classification, ...tenantFields(req.user) } },
       { new: true, upsert: true }
-    );
+    ).collation({ locale: 'en', strength: 2 });
     res.status(201).json(defect);
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -117,12 +117,19 @@ const resolveBrandModelStrings = async ({ brandId, modelId, brandName, model, us
 };
 
 const splitList = (value) =>
-  String(value || '')
+  Array.from(new Map(String(value || '')
     .split(',')
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((item) => [item.toLowerCase(), item])).values());
 
 const normalizeCode = (value) => String(value || '').trim().toUpperCase();
+const stableKey = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/&/g, ' and ')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '') || 'item';
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const productNameQuery = (value) => ({
   productName: { $regex: `^${escapeRegex(String(value || '').trim())}$`, $options: 'i' },
@@ -176,11 +183,12 @@ const ensureBrandAndModel = async ({ brandName, model, user }) => {
 
 const ensureDefects = async (type, names, user) => {
   for (const name of splitList(names)) {
+    const cleanName = String(name || '').trim();
     await DefectDetail.findOneAndUpdate(
-      scopedQuery(user, { type, name }),
-      { $setOnInsert: { type, name, isActive: true, ...tenantFields(user) } },
+      scopedQuery(user, { type, name: cleanName }),
+      { $setOnInsert: { type, name: cleanName, isActive: true, ...tenantFields(user) } },
       { new: true, upsert: true }
-    );
+    ).collation({ locale: 'en', strength: 2 });
   }
 };
 
@@ -237,14 +245,15 @@ const buildReviewQuestions = ({ type, questionText, optionType, options }) => {
   const optionLabels = splitList(options);
   const cleanQuestionText = String(questionText || '').trim();
   if (!cleanQuestionText && !optionType && !optionLabels.length) return [];
+  const questionKey = stableKey(`${type}-${cleanQuestionText || optionLabels.join('-') || optionType}`);
 
   return [{
-    questionId: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    questionId: `${type}-${questionKey}`,
     questionText: cleanQuestionText || `${type === 'rejection' ? 'Rejected' : 'Rework'} option`,
     responseType: responseTypeFromOptionType(optionType),
     required: optionLabels.length > 0,
     options: optionLabels.map((label, index) => ({
-      optionId: `${type}-option-${index + 1}`,
+      optionId: `${type}-${questionKey}-option-${stableKey(label) || index + 1}`,
       label,
       value: label,
       subQuestions: []
@@ -269,7 +278,7 @@ const acceptedRouteForStage = (stage, stageNumbers) => {
   return nextStage ? String(nextStage) : '';
 };
 
-const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], finalStages = [], user = null }) => {
+const syncWorkflowTemplate = async ({ product, productName, code, workflowStages = [], finalStages = [], user = null }) => {
   const normalizedStages = (workflowStages || [])
     .map((stage, index) => ({
       stageNumber: Number(stage.stageNumber || index + 1),
@@ -438,6 +447,11 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
     });
 
     const updateData = {
+      productId: product?._id || null,
+      configId: configDoc._id,
+      stageNumber: stage.stageNumber,
+      stageName: stage.stageName || stageNameFromNumber(stage.stageNumber),
+      configurationMode: 'stages',
       acceptedRouteStage: acceptedRouteForStage(stage, stageNumbers),
       reworkRouteStage: '',
       rejectionQuestionnaireEnabled: rejectionQuestions.length > 0,
@@ -446,15 +460,11 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
       reworkQuestions
     };
 
-    // Save with both key patterns to support both ProductReviewConfig lookups
+    // Use the manufacturing config id in stageId so identical stage names on
+    // different products never resolve to the same questionnaire.
     await StageReviewConfig.findOneAndUpdate(
-      { stageId: `${configDoc._id}-stages-${stage.stageNumber}` },
+      scopedQuery(user, { productId: product?._id || null, stageId: `${configDoc._id}-stages-${stage.stageNumber}` }),
       { stageId: `${configDoc._id}-stages-${stage.stageNumber}`, ...updateData, ...tenantFields(user) },
-      { new: true, upsert: true }
-    );
-    await StageReviewConfig.findOneAndUpdate(
-      { stageId: `${configDoc._id}-${stage.stageNumber}` },
-      { stageId: `${configDoc._id}-${stage.stageNumber}`, ...updateData, ...tenantFields(user) },
       { new: true, upsert: true }
     );
 
@@ -473,6 +483,10 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
     });
 
     const updateData = {
+      productId: product?._id || null,
+      configId: configDoc._id,
+      stageNumber: assignedStageNumber,
+      stageName: stage.stageName || `Final Stage ${index + 1}`,
       configurationMode: 'finalStages',
       rejectionQuestionnaireEnabled: notOkQuestions.length > 0,
       rejectionQuestions: notOkQuestions,
@@ -481,13 +495,8 @@ const syncWorkflowTemplate = async ({ productName, code, workflowStages = [], fi
     };
 
     await StageReviewConfig.findOneAndUpdate(
-      { stageId: `${configDoc._id}-finalStages-${assignedStageNumber}` },
+      scopedQuery(user, { productId: product?._id || null, stageId: `${configDoc._id}-finalStages-${assignedStageNumber}` }),
       { stageId: `${configDoc._id}-finalStages-${assignedStageNumber}`, ...updateData, ...tenantFields(user) },
-      { new: true, upsert: true }
-    );
-    await StageReviewConfig.findOneAndUpdate(
-      { stageId: `${configDoc._id}-${assignedStageNumber}` },
-      { stageId: `${configDoc._id}-${assignedStageNumber}`, ...updateData, ...tenantFields(user) },
       { new: true, upsert: true }
     );
 
@@ -711,6 +720,7 @@ exports.bulkUploadProducts = async (req, res) => {
 
         await syncStageOneInputQuantity(product);
         const workflowSync = await syncWorkflowTemplate({
+          product,
           productName,
           code: product.code,
           workflowStages: row.workflowStages,
