@@ -23,6 +23,14 @@ router.post('/', auth, adminOnly, productsController.createProduct);
 // @desc    Bulk upload products from parsed Excel rows (Admin only)
 router.post('/bulk-upload', auth, adminOnly, productsController.bulkUploadProducts);
 
+// @route   POST /api/products/bulk-delete
+// @desc    Bulk delete products and related data (Admin only)
+router.post('/bulk-delete', auth, adminOnly, productsController.bulkDeleteProducts);
+
+// @route   DELETE /api/products/bulk
+// @desc    Bulk delete products and related data (Admin only)
+router.delete('/bulk', auth, adminOnly, productsController.bulkDeleteProducts);
+
 // @route   PUT /api/products/:id
 // @desc    Update product (Admin only)
 router.put('/:id', auth, adminOnly, productsController.updateProduct);

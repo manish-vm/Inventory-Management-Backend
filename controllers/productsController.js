@@ -10,6 +10,16 @@ const QRCode = require('../models/QRCode');
 const DefectDetail = require('../models/DefectDetail');
 const ManufacturingConfig = require('../models/ManufacturingConfig');
 const StageReviewConfig = require('../models/StageReviewConfig');
+const StageReviewSubmission = require('../models/StageReviewSubmission');
+const InspectionFormResponse = require('../models/InspectionFormResponse');
+const InspectionScanLog = require('../models/InspectionScanLog');
+const InspectorVerification = require('../models/InspectorVerification');
+const ProductionLog = require('../models/ProductionLog');
+const ProcessingStage = require('../models/ProcessingStage');
+const ProductStage = require('../models/ProductStage');
+const StageMovementLog = require('../models/StageMovementLog');
+const ProductItem = require('../models/ProductItem');
+const Assembly = require('../models/Assembly');
 const User = require('../models/User');
 const {
   scopedQuery,
@@ -192,6 +202,12 @@ const ensureDefects = async (type, names, user) => {
   }
 };
 
+const makeSlug = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '');
+
 const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, user }) => {
   const cleanCategory = String(categoryName || '').trim();
   const cleanSubcategory = String(subcategoryName || '').trim();
@@ -200,7 +216,7 @@ const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, use
 
   const category = await Category.findOneAndUpdate(
     scopedQuery(user, { name: cleanCategory }),
-    { $setOnInsert: { name: cleanCategory, isActive: true, ...tenantFields(user) } },
+    { $setOnInsert: { name: cleanCategory, slug: makeSlug(cleanCategory), isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
   );
 
@@ -208,7 +224,7 @@ const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, use
 
   const subcategory = await Subcategory.findOneAndUpdate(
     scopedQuery(user, { name: cleanSubcategory, category: category._id }),
-    { $setOnInsert: { name: cleanSubcategory, category: category._id, isActive: true, ...tenantFields(user) } },
+    { $setOnInsert: { name: cleanSubcategory, slug: makeSlug(`${category._id}-${cleanSubcategory}`), category: category._id, isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
   );
 
@@ -752,15 +768,140 @@ exports.bulkUploadProducts = async (req, res) => {
   }
 };
 
+// @desc    Cascade delete a product and all related operational data.
+//          Preserves Category, Subcategory, and Role records.
+const deleteProductWithRelated = async (product, user) => {
+  const productId = product._id;
+  const code = product.code;
+  const productName = product.productName;
+
+  // Gather QR codes for the product (used to cascade item-level records).
+  const qrCodes = await QRCode.find(scopedQuery(user, { code })).select('_id').lean();
+  const qrIds = qrCodes.map((qr) => qr._id);
+  const qrIdStrings = qrCodes.map((qr) => qr.qrId).filter(Boolean);
+
+  // Manufacturing config + stage review configs/questionnaires.
+  const config = await ManufacturingConfig.findOne(scopedQuery(user, {
+    productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' }
+  }));
+  const configId = config?._id;
+  await ManufacturingConfig.deleteMany(scopedQuery(user, { _id: configId }));
+  await StageReviewConfig.deleteMany(scopedQuery(user, {
+    $or: [
+      { productId },
+      { configId },
+      { productName }
+    ]
+  }));
+  await StageReviewSubmission.deleteMany(scopedQuery(user, { productId }));
+
+  // Inspection responses, scans, inspector verifications.
+  await InspectionFormResponse.deleteMany({
+    ...scopedQuery(user, {}),
+    $or: [
+      { productId: String(productId) },
+      { productId },
+      { code },
+      ...(qrIdStrings.length ? [{ qrId: { $in: qrIdStrings } }] : [])
+    ]
+  });
+  await InspectorVerification.deleteMany({
+    ...scopedQuery(user, {}),
+    $or: [
+      { productId },
+      { productId: String(productId) },
+      { code }
+    ]
+  });
+  await InspectionScanLog.deleteMany({
+    ...scopedQuery(user, {}),
+    $or: [
+      { code },
+      ...(qrIdStrings.length ? [{ qrId: { $in: qrIdStrings } }] : []),
+      ...(qrIds.length ? [{ qrCode: { $in: qrIds } }] : [])
+    ]
+  });
+
+  // QR codes, production logs, processing stages, product stages, movement logs.
+  await QRCode.deleteMany(scopedQuery(user, { code }));
+  await ProductionLog.deleteMany(scopedQuery(user, {
+    $or: [
+      { code },
+      ...(qrIds.length ? [{ qrId: { $in: qrIds } }] : [])
+    ]
+  }));
+  await ProcessingStage.deleteMany(scopedQuery(user, {
+    $or: [
+      { code },
+      ...(qrIds.length ? [{ qrId: { $in: qrIds } }] : [])
+    ]
+  }));
+  await ProductStage.deleteMany(scopedQuery(user, {
+    $or: [
+      { productId },
+      { code }
+    ]
+  }));
+  await StageMovementLog.deleteMany(scopedQuery(user, {
+    $or: [
+      { code },
+      ...(qrIds.length ? [{ qrCode: { $in: qrIds } }] : []),
+      ...(qrIdStrings.length ? [{ qrId: { $in: qrIdStrings } }] : [])
+    ]
+  }));
+
+  // Product items derived from this product.
+  await ProductItem.deleteMany(scopedQuery(user, {
+    $or: [
+      { rootProductId: productId },
+      { rootCode: code }
+    ]
+  }));
+
+  // Assemblies referencing this product's QR codes.
+  if (qrIds.length) {
+    await Assembly.deleteMany(scopedQuery(user, {
+      'components.qrId': { $in: qrIds }
+    }));
+  }
+
+  // Finally delete the product itself.
+  await Product.deleteOne(scopedQuery(user, { _id: productId }));
+};
+
 // @desc    Delete product (Admin only)
 // @route   DELETE /api/products/:id
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findOneAndDelete(scopedQuery(req.user, { _id: req.params.id }));
+    const product = await Product.findOne(scopedQuery(req.user, { _id: req.params.id }));
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
+    await deleteProductWithRelated(product, req.user);
     res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// @desc    Bulk delete products (Admin only)
+// @route   DELETE /api/products/bulk
+exports.bulkDeleteProducts = async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+    if (!ids.length) {
+      return res.status(400).json({ message: 'No product ids provided' });
+    }
+
+    const products = await Product.find(scopedQuery(req.user, { _id: { $in: ids } }));
+    for (const product of products) {
+      await deleteProductWithRelated(product, req.user);
+    }
+
+    res.json({
+      message: `Deleted ${products.length} product(s) and related data`,
+      deleted: products.length
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
