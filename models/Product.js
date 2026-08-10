@@ -34,7 +34,7 @@ const productSchema = new mongoose.Schema({
 // Product identifiers are unique only inside a vendor/admin tenant. Different
 // dealers can upload the same Excel with the same product codes/names/slugs.
 productSchema.index({ dealerId: 1, code: 1 }, { unique: true, sparse: true });
-productSchema.index({ dealerId: 1, slug: 1 }, { unique: true, sparse: true });
+productSchema.index({ dealerId: 1, category: 1, subcategory: 1, slug: 1 }, { unique: true, sparse: true });
 productSchema.index(
   { dealerId: 1, productName: 1 },
   { collation: { locale: 'en', strength: 2 } }

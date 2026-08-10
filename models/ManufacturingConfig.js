@@ -56,6 +56,10 @@ const manufacturingConfigSchema = new mongoose.Schema({
       }
     }
   }],
+  productId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product'
+  },
   isActive: { 
     type: Boolean, 
     default: true 
