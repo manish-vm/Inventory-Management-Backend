@@ -218,7 +218,7 @@ const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, use
     scopedQuery(user, { name: cleanCategory }),
     { $setOnInsert: { name: cleanCategory, slug: makeSlug(cleanCategory), isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
-  );
+  ).collation({ locale: 'en', strength: 2 });
 
   if (!cleanSubcategory) return { category: category._id, subcategory: undefined };
 
@@ -226,7 +226,7 @@ const ensureCategoryAndSubcategory = async ({ categoryName, subcategoryName, use
     scopedQuery(user, { name: cleanSubcategory, category: category._id }),
     { $setOnInsert: { name: cleanSubcategory, slug: makeSlug(`${category._id}-${cleanSubcategory}`), category: category._id, isActive: true, ...tenantFields(user) } },
     { new: true, upsert: true }
-  );
+  ).collation({ locale: 'en', strength: 2 });
 
   return { category: category._id, subcategory: subcategory._id };
 };
@@ -421,15 +421,22 @@ const syncWorkflowTemplate = async ({ product, productName, code, workflowStages
     };
   });
 
-  const existingConfig = await ManufacturingConfig.findOne(scopedQuery(user, {
-    productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' }
+  let existingConfig = await ManufacturingConfig.findOne(scopedQuery(user, {
+    productId: product?._id
   }));
+  if (!existingConfig && product) {
+    existingConfig = await ManufacturingConfig.findOne(scopedQuery(user, {
+      productName: { $regex: `^${escapeRegex(productName)}$`, $options: 'i' },
+      productId: { $exists: false }
+    }));
+  }
   const workflowType = `${manufacturingStages.length}-step`;
   let workflowCreated = false;
   let configDoc;
 
   if (existingConfig) {
     existingConfig.productName = productName;
+    existingConfig.productId = product?._id;
     existingConfig.workflowType = workflowType;
     existingConfig.stages = manufacturingStages;
     if (builtFinalStages.length) existingConfig.finalStages = builtFinalStages;
@@ -440,6 +447,7 @@ const syncWorkflowTemplate = async ({ product, productName, code, workflowStages
     workflowCreated = true;
     configDoc = await ManufacturingConfig.create({
       productName,
+      productId: product?._id,
       workflowType,
       stages: manufacturingStages,
       finalStages: builtFinalStages,
@@ -561,9 +569,28 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ message: 'productName is required' });
     }
 
-    const existingProductName = await Product.findOne(scopedQuery(req.user, productNameQuery(productName)));
+    const existingProductName = await Product.findOne(scopedQuery(req.user, {
+      ...productNameQuery(productName),
+      category: category || null,
+      subcategory: subcategory || null
+    }));
     if (existingProductName) {
       return res.status(200).json(existingProductName);
+    }
+
+    const slug = makeSlug(productName);
+    const existingSlug = await Product.findOne(scopedQuery(req.user, {
+      slug,
+      category: category || null,
+      subcategory: subcategory || null
+    }));
+    if (existingSlug) {
+      let categoryName = 'default';
+      if (category) {
+        const catDoc = await Category.findById(category);
+        if (catDoc) categoryName = catDoc.name;
+      }
+      return res.status(400).json({ message: `Product already exists for this dealer under category ${categoryName}.` });
     }
 
     const requestedCode = normalizeCode(code || rootCode);
@@ -645,6 +672,27 @@ exports.updateProduct = async (req, res) => {
       if (existingProduct) {
         return res.status(400).json({ message: 'Code already exists' });
       }
+    }
+
+    const targetCategory = category !== undefined ? category : product.category;
+    const targetSubcategory = subcategory !== undefined ? subcategory : product.subcategory;
+    const targetProductName = productName || product.productName;
+
+    const slug = makeSlug(targetProductName);
+    const existingSlug = await Product.findOne(scopedQuery(req.user, {
+      _id: { $ne: product._id },
+      slug,
+      category: targetCategory || null,
+      subcategory: targetSubcategory || null
+    }));
+    if (existingSlug) {
+      let categoryName = 'default';
+      const catId = targetCategory;
+      if (catId) {
+        const catDoc = await Category.findById(catId);
+        if (catDoc) categoryName = catDoc.name;
+      }
+      return res.status(400).json({ message: `Product already exists for this dealer under category ${categoryName}.` });
     }
 
     if (productName) product.productName = productName;
