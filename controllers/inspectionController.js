@@ -941,6 +941,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
       // Build: for each question, track which options were selected and their entered counts.
       const selectedByQuestion = {};
       const countsByQuestionOption = {};
+      const directLeafCountsByQuestion = {};
       const freeFormCountsByQuestion = {};
       const missingReasonDetails = [];
 
@@ -972,6 +973,9 @@ exports.submitBatchInspectionResponse = async (req, res) => {
             subQuestion: String(r?.subQuestion || '').trim(),
             subOption: String(r?.subOption || '').trim()
           };
+          if (r?.isLeafAnswer) {
+            directLeafCountsByQuestion[qKey] = (directLeafCountsByQuestion[qKey] || 0) + countVal;
+          }
           continue;
         }
 
@@ -998,6 +1002,15 @@ exports.submitBatchInspectionResponse = async (req, res) => {
         }
         overall += qSum;
         perQuestion[qKey] = qSum;
+      }
+
+      // Single-option leaf questions render a direct count input without a checkbox/radio
+      // selection row, so count those when there is no selection record for that question.
+      for (const [qKey, count] of Object.entries(directLeafCountsByQuestion)) {
+        if (selectedByQuestion[qKey]) continue;
+        const c = Math.max(0, Number(count) || 0);
+        overall += c;
+        perQuestion[qKey] = (perQuestion[qKey] || 0) + c;
       }
 
       for (const [qKey, count] of Object.entries(freeFormCountsByQuestion)) {
