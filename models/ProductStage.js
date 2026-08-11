@@ -53,6 +53,7 @@ const productStageSchema = new mongoose.Schema(
 );
 
 productStageSchema.index({ productId: 1, stageNumber: 1 }, { unique: true });
+productStageSchema.index({ code: 1, stageNumber: 1 });
 
 module.exports = mongoose.model('ProductStage', productStageSchema);
 
