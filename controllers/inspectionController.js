@@ -241,6 +241,35 @@ const getEmployeeAssignedProductIds = async (employee, finalStage = false) => {
   return Array.from(productIds);
 };
 
+const getEmployeeRolePermissionMap = async (employee, finalStage = false) => {
+  if (!isRoleScopedWorker(employee)) return null;
+  const roleId = roleIdForInspectionScope(employee, finalStage);
+  if (!roleId) return new Map();
+
+  const role = await Role.findById(roleId).select('products permissions').lean();
+  if (!role) return new Map();
+
+  const permissions = new Map();
+  (role.products || []).forEach((id) => {
+    permissions.set(String(id), { allowed: true, stageNumbers: [] });
+  });
+  (role.permissions || []).forEach((category) => {
+    const assignProduct = (product) => {
+      if (!product?.productId) return;
+      permissions.set(String(product.productId), {
+        allowed: true,
+        stageNumbers: (product.stages || []).map((stage) => Number(stage.stageNumber)).filter(Number.isFinite)
+      });
+    };
+    (category.products || []).forEach(assignProduct);
+    (category.subcategories || []).forEach((subcategory) => {
+      (subcategory.products || []).forEach(assignProduct);
+    });
+  });
+
+  return permissions;
+};
+
 const normalizeObjectIdString = (value) => {
   const raw = String(value || '').trim();
   return mongoose.Types.ObjectId.isValid(raw) ? raw : '';
@@ -610,7 +639,8 @@ exports.searchProductsForEmployee = async (req, res) => {
   try {
     const { q = '', finalStage } = req.query;
     const term = String(q).trim();
-    const assignedProductIds = await getEmployeeAssignedProductIds(req.user, finalStage === 'true');
+    const isFinalStage = finalStage === 'true';
+    const assignedProductIds = await getEmployeeAssignedProductIds(req.user, isFinalStage);
     if (['employee', 'inspector'].includes(req.user?.role) && assignedProductIds.length === 0) return res.json([]);
 
     // If employee searches by product name, we must return product-level entry
@@ -627,6 +657,7 @@ exports.searchProductsForEmployee = async (req, res) => {
         : productFilter
     )
       .limit(50)
+      .select('_id productName code')
       .lean();
 
     // Requirement: employee portal dropdown/list should show each product ONCE (union by productName),
@@ -638,40 +669,138 @@ exports.searchProductsForEmployee = async (req, res) => {
 
     if (matchedByProductName.length) {
       const uniqueProductNames = Array.from(new Set(matchedByProductName.map((p) => p.productName).filter(Boolean)));
+      const productsByName = matchedByProductName.reduce((map, product) => {
+        const products = map.get(product.productName) || [];
+        products.push(product);
+        map.set(product.productName, products);
+        return map;
+      }, new Map());
+      const allCodes = Array.from(new Set(matchedByProductName.map((p) => p.code).filter(Boolean)));
+      const permissionMap = await getEmployeeRolePermissionMap(req.user, isFinalStage);
+      const [productStageCounts, qrStageCounts, processingStageCounts, latestQrRows] = await Promise.all([
+        allCodes.length
+          ? ProductStage.aggregate([
+              { $match: { code: { $in: allCodes } } },
+              {
+                $group: {
+                  _id: { code: '$code', stageNumber: '$stageNumber' },
+                  count: {
+                    $sum: {
+                      $max: [
+                        {
+                          $ifNull: [
+                            '$pendingCount',
+                            {
+                              $subtract: [
+                                { $ifNull: ['$availableQuantity', 0] },
+                                {
+                                  $add: [
+                                    { $ifNull: ['$acceptedCount', 0] },
+                                    { $ifNull: ['$rejectedCount', 0] },
+                                    { $ifNull: ['$reworkCount', 0] }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        0
+                      ]
+                    }
+                  }
+                }
+              }
+            ])
+          : [],
+        allCodes.length
+          ? QRCode.aggregate([
+              { $match: { code: { $in: allCodes } } },
+              { $group: { _id: { code: '$code', stageNumber: '$currentStage' }, count: { $sum: 1 } } }
+            ])
+          : [],
+        allCodes.length
+          ? ProcessingStage.aggregate([
+              {
+                $match: {
+                  code: { $in: allCodes },
+                  $or: [{ qrId: { $exists: false } }, { qrId: null }]
+                }
+              },
+              {
+                $group: {
+                  _id: { code: '$code', stageNumber: '$stageNumber' },
+                  count: {
+                    $sum: {
+                      $max: [
+                        {
+                          $subtract: [
+                            { $ifNull: ['$inputQuantity', 0] },
+                            {
+                              $add: [
+                                { $ifNull: ['$acceptedQuantity', 0] },
+                                { $ifNull: ['$rejectedQuantity', 0] },
+                                { $ifNull: ['$reworkQuantity', 0] }
+                              ]
+                            }
+                          ]
+                        },
+                        0
+                      ]
+                    }
+                  }
+                }
+              }
+            ])
+          : [],
+        allCodes.length
+          ? QRCode.aggregate([
+              { $match: { code: { $in: allCodes } } },
+              { $sort: { updatedAt: -1, currentStage: -1 } },
+              { $group: { _id: '$code', currentStage: { $first: '$currentStage' }, updatedAt: { $first: '$updatedAt' } } }
+            ])
+          : []
+      ]);
+      const countByCodeStage = new Map(productStageCounts.map((row) => [`${row._id.code}:${row._id.stageNumber}`, Number(row.count || 0)]));
+      qrStageCounts.forEach((row) => {
+        const key = `${row._id.code}:${row._id.stageNumber}`;
+        if (!countByCodeStage.has(key)) countByCodeStage.set(key, Number(row.count || 0));
+      });
+      processingStageCounts.forEach((row) => {
+        const key = `${row._id.code}:${row._id.stageNumber}`;
+        if (!countByCodeStage.has(key)) countByCodeStage.set(key, Number(row.count || 0));
+      });
+      const latestStageByCode = new Map(latestQrRows.map((row) => [row._id, Number(row.currentStage || 0)]));
 
       const rows = [];
       for (const productName of uniqueProductNames) {
-        const codes = matchedByProductName
-          .filter((p) => p.productName === productName)
-          .map((p) => p.code)
-          .filter(Boolean);
-
-        const latestQrRows = codes.length
-          ? await QRCode.find({ code: { $in: codes } }).sort({ updatedAt: -1 }).limit(1).lean()
-          : null;
-
-        const latestQr = latestQrRows?.[0];
-        const isFinalStage = req.query.finalStage === 'true';
-        const { stages } = await resolveProductContext(codes[0], { finalStagesOnly: isFinalStage });
-        const stageCounts = await Promise.all(
-          (stages || []).map(async (stage) => ({
-            stageNumber: Number(stage.stageNumber),
-            count: await getAvailableCountForStage(codes, stage.stageNumber)
-          }))
-        );
-        const permission = await getEmployeeRolePermission(req.user, matchedByProductName.find((p) => p.productName === productName)?._id, isFinalStage);
+        const products = productsByName.get(productName) || [];
+        const codes = products.map((p) => p.code).filter(Boolean);
+        const firstProduct = products[0];
+        const permission = permissionMap?.get(String(firstProduct?._id)) || null;
+        const stageNumbers = Array.from(new Set(
+          Array.from(countByCodeStage.keys())
+            .filter((key) => codes.some((code) => key.startsWith(`${code}:`)))
+            .map((key) => Number(key.split(':').pop()))
+            .filter(Number.isFinite)
+        ));
+        const permittedStageNumbers = permission?.stageNumbers?.length ? permission.stageNumbers : stageNumbers;
+        const stageCounts = permittedStageNumbers.map((stageNumber) => ({
+          stageNumber,
+          count: codes.reduce((sum, code) => sum + (countByCodeStage.get(`${code}:${stageNumber}`) || 0), 0)
+        }));
         const availableCount = permission?.stageNumbers?.length
-          ? stageCounts.filter((item) => permission.stageNumbers.includes(item.stageNumber)).reduce((sum, item) => sum + item.count, 0)
+          ? stageCounts.reduce((sum, item) => sum + item.count, 0)
           : stageCounts.reduce((sum, item) => sum + item.count, 0);
         const firstAvailableStage = stageCounts.find((item) => item.count > 0);
+        const latestStage = codes.map((code) => latestStageByCode.get(code)).find(Boolean);
 
         rows.push({
-          productId: matchedByProductName.find((p) => p.productName === productName)?._id || null,
+          productId: firstProduct?._id || null,
           productName,
           code: codes[0] || '',
           batchNo: '',
           availableCount,
-          currentStage: latestQr?.currentStage || firstAvailableStage?.stageNumber || stages?.[0]?.stageNumber || 1
+          currentStage: latestStage || firstAvailableStage?.stageNumber || 1
         });
       }
 
