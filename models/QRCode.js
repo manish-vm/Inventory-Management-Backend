@@ -53,6 +53,7 @@ const qrCodeSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 qrCodeSchema.index({ code: 1, status: 1 });
+qrCodeSchema.index({ code: 1, currentStage: 1, updatedAt: -1 });
 
 module.exports = mongoose.model('QRCode', qrCodeSchema);
 
