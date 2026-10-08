@@ -2447,10 +2447,14 @@ exports.getMisDashboard = async (req, res) => {
       if (!isFinalStageSubmission) {
         reportIds.push(...[primaryReportId, dynamicReportId].filter(Boolean));
         if (dynamicReportId) {
+          reportIds.push(`${dynamicReportId}-stages`);
           reportIds.push(`${dynamicReportId}-mis`);
           reportIds.push(`${dynamicReportId}-crs`);
           reportIds.push(`${dynamicReportId}-rejection`);
           reportIds.push(`${dynamicReportId}-rework`);
+        }
+        if (primaryReportId) {
+          reportIds.push(`${primaryReportId}-stages`);
         }
         if (classification.reportType === 'helmet-assembly') {
           const line = normalizeReportText(classification.productionLine);
@@ -2462,8 +2466,12 @@ exports.getMisDashboard = async (req, res) => {
 
       if (isFinalStageSubmission) {
         if (dynamicReportId) {
+          okNotOkReportIds.push(`${dynamicReportId}-final-stages`);
           okNotOkReportIds.push(`${dynamicReportId}-ok`);
           okNotOkReportIds.push(`${dynamicReportId}-not-ok`);
+        }
+        if (primaryReportId) {
+          okNotOkReportIds.push(`${primaryReportId}-final-stages`);
         }
         if (classification.reportType === 'helmet-assembly') {
           const line = normalizeReportText(classification.productionLine);
@@ -2519,11 +2527,12 @@ exports.getMisDashboard = async (req, res) => {
         const partName = String(classification.partName || response.partName || response.partDescription || '').trim() || 'Assembly';
         const processName = String(classification.processName || response.processName || '').trim() || stageName;
         for (const reportId of okNotOkReportIds) {
-        const report = ensureReport(reportId, classification);
-        const day = report.days[dayIndex];
-        const isOkReport = reportId.endsWith('-ok') && !reportId.endsWith('-not-ok');
-        const reportOk = isOkReport ? ok : 0;
-        const reportNotOk = isOkReport ? 0 : notOk;
+          const report = ensureReport(reportId, classification);
+          const day = report.days[dayIndex];
+          const isCombinedFinalStageReport = reportId.endsWith('-final-stages');
+          const isOkReport = reportId.endsWith('-ok') && !reportId.endsWith('-not-ok');
+          const reportOk = isCombinedFinalStageReport || isOkReport ? ok : 0;
+          const reportNotOk = isCombinedFinalStageReport || !isOkReport ? notOk : 0;
           day.output += output;
           day.ok += reportOk;
           day.notOk += reportNotOk;
