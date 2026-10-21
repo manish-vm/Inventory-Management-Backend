@@ -28,7 +28,7 @@ const roleSchema = new mongoose.Schema({
   roleName: { type: String, required: true, trim: true },
   roleFor: {
     type: String,
-    enum: ['employee', 'inspector', 'finalStages'],
+    enum: ['employee', 'inspector', 'employeeFinalStages', 'inspectorFinalStages', 'finalStages'],
     default: 'employee'
   },
   permissions: [permissionCategorySchema],
@@ -38,7 +38,8 @@ const roleSchema = new mongoose.Schema({
   stages: [{ type: mongoose.Schema.Types.ObjectId }],
   finalStages: [{ type: mongoose.Schema.Types.ObjectId }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  dealerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer', default: null }
+  dealerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer', default: null },
+  migratedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null }
 }, { timestamps: true });
 
 roleSchema.index(
