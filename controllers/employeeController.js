@@ -16,7 +16,7 @@ const findScopedRole = (roleId, user, roleFor) => {
 
 const finalStageRoleTypeFor = (userRole) => userRole === 'inspector'
   ? 'inspectorFinalStages'
-  : 'employeeFinalStages';
+  : 'finalStages';
 
 const stagesFromRole = (role) => {
   const stages = (role?.permissions || []).flatMap((category) =>
