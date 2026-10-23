@@ -126,10 +126,7 @@ exports.updateEmployee = async (req, res) => {
         employee.manufacturingLevel = assignedStages[0]?.stageNumber || 1;
       }
     }
-    if (employee.role === 'inspector') {
-      employee.assignedFinalStageRole = null;
-      employee.assignedFinalStages = [];
-    } else if (assignedFinalStageRole !== undefined) {
+    if (assignedFinalStageRole !== undefined) {
       if (!assignedFinalStageRole) {
         employee.assignedFinalStageRole = null;
         employee.assignedFinalStages = [];

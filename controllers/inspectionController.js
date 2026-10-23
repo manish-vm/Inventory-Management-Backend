@@ -177,18 +177,21 @@ const validateEmployeeStageAccess = ({ employee, currentStage, stages = [] }) =>
   };
 };
 
-const canEmployeeProcessStage = (employee, stageNumber) => {
+const canEmployeeProcessStage = (employee, stageNumber, finalStage = false) => {
   if (!isRoleScopedWorker(employee)) return true;
-  if (employee.assignedRole && (!Array.isArray(employee.assignedStages) || employee.assignedStages.length === 0)) return true;
-  const assignedStageNumbers = Array.isArray(employee.assignedStages) && employee.assignedStages.length
-    ? employee.assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
+  const assignedRole = finalStage ? employee.assignedFinalStageRole : employee.assignedRole;
+  const assignedStages = finalStage ? employee.assignedFinalStages : employee.assignedStages;
+  if (finalStage && !assignedRole) return false;
+  if (assignedRole && (!Array.isArray(assignedStages) || assignedStages.length === 0)) return true;
+  const assignedStageNumbers = Array.isArray(assignedStages) && assignedStages.length
+    ? assignedStages.map((stage) => Number(stage.stageNumber || stage)).filter(Number.isFinite)
     : [Number(employee.manufacturingLevel || 1)];
   return assignedStageNumbers.includes(Number(stageNumber));
 };
 
 const roleIdForInspectionScope = (employee, finalStage = false) => {
   if (!finalStage) return employee.assignedRole;
-  return employee.role === 'inspector' ? employee.assignedRole : employee.assignedFinalStageRole;
+  return employee.assignedFinalStageRole;
 };
 
 const getEmployeeRolePermission = async (employee, productId, finalStage = false) => {
@@ -299,15 +302,22 @@ const getResponseProduct = async (response, user) => {
 const canInspectorVerifySubmission = async (inspector, response) => {
   if (inspector?.role === 'admin' || inspector?.role === 'superadmin') return true;
   if (inspector?.role !== 'inspector') return false;
-  if (!canEmployeeProcessStage(inspector, response?.stageNumber)) return false;
+  const finalStage = Boolean(response?.finalStage);
+  if (!canEmployeeProcessStage(inspector, response?.stageNumber, finalStage)) return false;
 
-  const assignedProductIds = await getEmployeeAssignedProductIds(inspector);
+  const assignedProductIds = await getEmployeeAssignedProductIds(inspector, finalStage);
   if (assignedProductIds === null) return true;
   if (!assignedProductIds.length) return false;
 
   const product = await getResponseProduct(response, inspector);
   if (!product?._id) return false;
-  return assignedProductIds.includes(String(product._id));
+  if (!assignedProductIds.includes(String(product._id))) return false;
+
+  const rolePermission = await getEmployeeRolePermission(inspector, product._id, finalStage);
+  return Boolean(
+    rolePermission?.allowed
+    && (!rolePermission.stageNumbers.length || rolePermission.stageNumbers.includes(Number(response?.stageNumber)))
+  );
 };
 
 const findAnswerOptionMeta = (questions = [], answer = {}) => {
@@ -898,8 +908,8 @@ exports.getBatchProductForEmployee = async (req, res) => {
     if (productMatch?.productName) {
       const rolePermission = await getEmployeeRolePermission(req.user, productMatch._id, isFinalStage);
       if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-        const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
-        if (isFinalStage && req.user?.role !== 'inspector' && !req.user.assignedFinalStageRole) {
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
+        if (isFinalStage && !req.user.assignedFinalStageRole) {
           return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
         }
         return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
@@ -918,7 +928,7 @@ exports.getBatchProductForEmployee = async (req, res) => {
       const stageRows = await buildEmployeeStageRows({ codes, stages, employee: req.user, productId: productMatch._id, currentStageNumber, finalStage: isFinalStage });
 
       if (['employee', 'inspector'].includes(req.user?.role) && !stageRows.some((stage) => stage.selectable)) {
-        const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
+        const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
         return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your ${roleLabel}` });
       }
 
@@ -992,10 +1002,10 @@ exports.getBatchProductForEmployee = async (req, res) => {
     const resolvedProduct = product || productMatch;
     const rolePermission = await getEmployeeRolePermission(req.user, resolvedProduct?._id, isFinalStage);
     if (['employee', 'inspector'].includes(req.user?.role) && !rolePermission?.allowed) {
-      if (isFinalStage && req.user?.role !== 'inspector' && !req.user.assignedFinalStageRole) {
+      if (isFinalStage && !req.user.assignedFinalStageRole) {
         return res.status(403).json({ message: 'No final stage role has been assigned to your account. Please contact your administrator.' });
       }
-      const roleLabel = isFinalStage && req.user?.role !== 'inspector' ? 'final stage role' : 'assigned role';
+      const roleLabel = isFinalStage ? 'final stage role' : 'assigned role';
       return res.status(403).json({ message: `This product is not assigned to your ${roleLabel}` });
     }
     const currentStageNumber = stages[0]?.stageNumber || 1;
@@ -1088,7 +1098,7 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     if (!code) return res.status(400).json({ message: 'code is required' });
     const stageNumber = Number(stageId);
     if (!Number.isFinite(stageNumber)) return res.status(400).json({ message: 'stageId is required' });
-    if (!finalStage && !canEmployeeProcessStage(req.user, stageNumber)) {
+    if (!canEmployeeProcessStage(req.user, stageNumber, Boolean(finalStage))) {
       return res.status(403).json({ message: 'You are not assigned to this manufacturing stage' });
     }
 
@@ -1224,6 +1234,15 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const qrCode = await QRCode.findOne({ code, ...(batchNo ? { batchNo } : {}) }).sort({ updatedAt: -1 });
     const { product, stages } = await resolveProductContext(code, { finalStagesOnly: Boolean(finalStage) });
     const resolvedProductId = product?._id || productId;
+    const rolePermission = await getEmployeeRolePermission(req.user, resolvedProductId, Boolean(finalStage));
+    if (
+      isRoleScopedWorker(req.user)
+      && (!rolePermission?.allowed
+        || (rolePermission.stageNumbers.length && !rolePermission.stageNumbers.includes(stageNumber)))
+    ) {
+      const roleLabel = finalStage ? 'final stage role' : 'assigned role';
+      return res.status(403).json({ message: `This product stage is not assigned to your ${roleLabel}` });
+    }
     const isOpenIntakeStage = Number(stageNumber) === 1;
     const stageAvailableCount = finalStage
       ? (await getFinalStageAvailability([code], stageNumber, stageName)).availableCount
@@ -2629,10 +2648,14 @@ exports.getMisDashboard = async (req, res) => {
       if (!isFinalStageSubmission) {
         reportIds.push(...[primaryReportId, dynamicReportId].filter(Boolean));
         if (dynamicReportId) {
+          reportIds.push(`${dynamicReportId}-stages`);
           reportIds.push(`${dynamicReportId}-mis`);
           reportIds.push(`${dynamicReportId}-crs`);
           reportIds.push(`${dynamicReportId}-rejection`);
           reportIds.push(`${dynamicReportId}-rework`);
+        }
+        if (primaryReportId) {
+          reportIds.push(`${primaryReportId}-stages`);
         }
         if (classification.reportType === 'helmet-assembly') {
           const line = normalizeReportText(classification.productionLine);
@@ -2644,8 +2667,12 @@ exports.getMisDashboard = async (req, res) => {
 
       if (isFinalStageSubmission) {
         if (dynamicReportId) {
+          okNotOkReportIds.push(`${dynamicReportId}-final-stages`);
           okNotOkReportIds.push(`${dynamicReportId}-ok`);
           okNotOkReportIds.push(`${dynamicReportId}-not-ok`);
+        }
+        if (primaryReportId) {
+          okNotOkReportIds.push(`${primaryReportId}-final-stages`);
         }
         if (classification.reportType === 'helmet-assembly') {
           const line = normalizeReportText(classification.productionLine);
@@ -2701,11 +2728,12 @@ exports.getMisDashboard = async (req, res) => {
         const partName = String(classification.partName || response.partName || response.partDescription || '').trim() || 'Assembly';
         const processName = String(classification.processName || response.processName || '').trim() || stageName;
         for (const reportId of okNotOkReportIds) {
-        const report = ensureReport(reportId, classification);
-        const day = report.days[dayIndex];
-        const isOkReport = reportId.endsWith('-ok') && !reportId.endsWith('-not-ok');
-        const reportOk = isOkReport ? ok : 0;
-        const reportNotOk = isOkReport ? 0 : notOk;
+          const report = ensureReport(reportId, classification);
+          const day = report.days[dayIndex];
+          const isCombinedFinalStageReport = reportId.endsWith('-final-stages');
+          const isOkReport = reportId.endsWith('-ok') && !reportId.endsWith('-not-ok');
+          const reportOk = isCombinedFinalStageReport || isOkReport ? ok : 0;
+          const reportNotOk = isCombinedFinalStageReport || !isOkReport ? notOk : 0;
           day.output += output;
           day.ok += reportOk;
           day.notOk += reportNotOk;

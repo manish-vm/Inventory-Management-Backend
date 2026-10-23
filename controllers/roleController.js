@@ -79,7 +79,8 @@ const buildPermissionTree = async (user, stageType = 'stages') => {
 
 const normalizePayload = async (body, user) => {
   const roleName = String(body.roleName || '').trim();
-  const roleFor = body.roleFor === 'inspector' ? 'inspector' : body.roleFor === 'finalStages' ? 'finalStages' : 'employee';
+  const supportedRoleTypes = ['employee', 'inspector', 'employeeFinalStages', 'inspectorFinalStages', 'finalStages'];
+  const roleFor = supportedRoleTypes.includes(body.roleFor) ? body.roleFor : 'employee';
   if (!roleName) {
     const error = new Error('Role name is required');
     error.status = 400;
@@ -92,7 +93,7 @@ const normalizePayload = async (body, user) => {
   const selectedStages = new Set(ids(body.stages));
   const selectedFinalStages = new Set(ids(body.finalStages));
 
-  const stageType = roleFor === 'finalStages' ? 'finalStages' : 'stages';
+  const stageType = roleFor === 'finalStages' || roleFor.endsWith('FinalStages') ? 'finalStages' : 'stages';
   const tree = await buildPermissionTree(user, stageType);
   const permissions = tree.map((category) => ({
     categoryId: category.id,

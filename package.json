@@ -10,6 +10,7 @@
                     "seed:admin":  "node seedSuperAdmin.js",
                     "seed:plans":  "node seedPlans.js",
                     "seed:mis":  "node seedMISData.js",
+                    "migrate:final-stage-role-scopes":  "node migrateFinalStageRoleScopes.js",
                     "test":  "node tests/reportClassification.test.js",
                     "clear:operations-only":  "node clearOperationsOnly.js",
                     "clear:operations-only:dry-run":  "node clearOperationsOnly.js --dry-run",
