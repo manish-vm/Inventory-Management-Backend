@@ -10,11 +10,13 @@ const findScopedRole = (roleId, user, roleFor) => {
   return Role.findOne({
     _id: roleId,
     dealerId: user.dealerId || null,
-    ...(['employee', 'inspector', 'finalStages'].includes(targetRole)
-      ? { roleFor: targetRole }
-      : { roleFor: 'employee' })
+    roleFor: targetRole
   });
 };
+
+const finalStageRoleTypeFor = (userRole) => userRole === 'inspector'
+  ? 'inspectorFinalStages'
+  : 'employeeFinalStages';
 
 const stagesFromRole = (role) => {
   const stages = (role?.permissions || []).flatMap((category) =>
@@ -47,8 +49,8 @@ exports.createEmployee = async (req, res) => {
       assignedStages = stagesFromRole(role);
     }
 
-    if (userRole !== 'inspector' && assignedFinalStageRole) {
-      finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, 'finalStages');
+    if (assignedFinalStageRole) {
+      finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, finalStageRoleTypeFor(userRole));
       if (!finalStageRole) return res.status(400).json({ message: 'Selected final stages role is invalid or unavailable' });
       assignedFinalStages = stagesFromRole(finalStageRole);
     }
@@ -132,7 +134,7 @@ exports.updateEmployee = async (req, res) => {
         employee.assignedFinalStageRole = null;
         employee.assignedFinalStages = [];
       } else {
-        const finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, 'finalStages');
+        const finalStageRole = await findScopedRole(assignedFinalStageRole, req.user, finalStageRoleTypeFor(employee.role));
         if (!finalStageRole) return res.status(400).json({ message: 'Selected final stages role is invalid or unavailable' });
         employee.assignedFinalStageRole = finalStageRole._id;
         employee.assignedFinalStages = stagesFromRole(finalStageRole);

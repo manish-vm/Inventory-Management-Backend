@@ -14,7 +14,9 @@
                     "clear:operations-only":  "node clearOperationsOnly.js",
                     "clear:operations-only:dry-run":  "node clearOperationsOnly.js --dry-run",
                     "clear:all-except-users":  "node clearOperationsOnly.js",
-                    "clear:all-except-users:dry-run":  "node clearOperationsOnly.js --dry-run"
+                    "clear:all-except-users:dry-run":  "node clearOperationsOnly.js --dry-run",
+                    "seed:clear-db":  "node seedClearDatabase.js --confirm",
+                    "seed:clear-db:dry-run":  "node seedClearDatabase.js --dry-run"
                 },
     "dependencies":  {
                          "bcryptjs":  "^2.4.3",
