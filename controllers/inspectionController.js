@@ -2315,20 +2315,14 @@ exports.getMisDashboard = async (req, res) => {
       productName: { $in: responseProductNames },
       ...tenantDealerFilter(req.user)
     }).lean()).map((config) => [normalizeReportText(config.productName), config]));
-    const responseQrIds = [
-      ...new Set(responses.map((response) => response.qrId).filter(Boolean))
-    ];
-    const qrCodesByQrId = new Map((await QRCode.find({ qrId: { $in: responseQrIds }, ...tenantDealerFilter(req.user) })
-      .select('qrId currentStage status')
-      .lean()).map((qrCode) => [qrCode.qrId, qrCode]));
-
     const resolveCurrentStageName = (response) => {
+      const submittedStageName = String(response?.stageName || '').trim();
+      if (submittedStageName) return submittedStageName;
+
       const config = configsByProductName.get(normalizeReportText(response?.productName));
-      const qrCode = qrCodesByQrId.get(response?.qrId);
-      if (qrCode?.status === 'completed') return 'Completed';
-      const currentStageNumber = Number(qrCode?.currentStage || response?.stageNumber || 0);
-      const currentStage = (config?.stages || []).find((stage) => Number(stage.stageNumber) === currentStageNumber);
-      return String(currentStage?.stageName || response?.stageName || (currentStageNumber ? `Stage ${currentStageNumber}` : '')).trim();
+      const submittedStageNumber = Number(response?.stageNumber || 0);
+      const submittedStage = (config?.stages || []).find((stage) => Number(stage.stageNumber) === submittedStageNumber);
+      return String(submittedStage?.stageName || (submittedStageNumber ? `Stage ${submittedStageNumber}` : '')).trim();
     };
 
     const ensureReport = (reportId, classification) => {
@@ -2480,6 +2474,7 @@ exports.getMisDashboard = async (req, res) => {
         const stageName = resolveCurrentStageName(response);
         return {
           key: toKey(`${stageName} ${rootQuestion} ${parentOption} ${partName} ${subQuestion} ${subOption} ${defectName}`),
+          stageNumber: Number(response?.stageNumber) || 0,
           stageName,
           questionHeader: rootQuestion,
           questionAnswer: parentOption,
@@ -2507,6 +2502,7 @@ exports.getMisDashboard = async (req, res) => {
             subQuestionPath: answer.subQuestionPath || [],
             hasSubQuestion: Boolean(answer.hasSubQuestion),
             defectName: answer.name,
+            stageNumber: answer.stageNumber || 0,
             stageName: answer.stageName || '',
             assemblyProcess: answer.processName || '',
             partName: answer.partName || '',
@@ -2522,17 +2518,19 @@ exports.getMisDashboard = async (req, res) => {
     const addProcessOutput = (report, response, dayIndex, output, rejection) => {
       const partName = String(response?.productName || response?.partName || report.partName || 'Unspecified').trim();
       const processName = String(response?.processName || response?.stageName || report.processName || 'Unspecified').trim();
-      addProcessOutputRow(report, partName, processName, dayIndex, output, rejection);
+      addProcessOutputRow(report, partName, processName, dayIndex, output, rejection, response?.stageNumber);
     };
 
-    const addProcessOutputRow = (report, partNameValue, processNameValue, dayIndex, output, rejection) => {
+    const addProcessOutputRow = (report, partNameValue, processNameValue, dayIndex, output, rejection, stageNumberValue = 0) => {
       const partName = String(partNameValue || report.partName || 'Unspecified').trim();
       const processName = String(processNameValue || report.processName || 'Unspecified').trim();
-      const key = toKey(`${partName} ${processName}`);
+      const stageNumber = Number(stageNumberValue) || 0;
+      const key = toKey(`${partName} stage-${stageNumber} ${processName}`);
       if (!report.processRows[key]) {
         report.processRows[key] = {
           key,
           partName,
+          stageNumber,
           processName,
           days: Array.from({ length: daysInMonth }, () => ({ output: 0, rejection: 0 })),
           totalOutput: 0,
@@ -2549,15 +2547,16 @@ exports.getMisDashboard = async (req, res) => {
       const seenProcessRows = new Set();
       for (const answer of answers) {
         const partName = String(answer.partName || '').trim();
-        const processName = String(answer.processName || '').trim();
+        const processName = String(answer.stageName || answer.processName || '').trim();
+        const stageNumber = Number(answer.stageNumber) || 0;
         if (!partName && !processName) continue;
-        const key = toKey(`${partName} ${processName}`);
+        const key = toKey(`${partName} stage-${stageNumber} ${processName}`);
         if (seenProcessRows.has(key)) continue;
         seenProcessRows.add(key);
         const rejection = answers
-          .filter((item) => toKey(`${item.partName || ''} ${item.processName || ''}`) === key)
+          .filter((item) => toKey(`${item.partName || ''} stage-${Number(item.stageNumber) || 0} ${item.stageName || item.processName || ''}`) === key)
           .reduce((sum, item) => sum + toCount(item.count), 0);
-        addProcessOutputRow(report, partName, processName, dayIndex, output, rejection);
+        addProcessOutputRow(report, partName, processName, dayIndex, output, rejection, stageNumber);
       }
     };
 
@@ -2740,10 +2739,16 @@ exports.getMisDashboard = async (req, res) => {
         ? Number(((report.totals.rejectionAndRework / report.totals.output) * 100).toFixed(2))
         : 0;
       report.rows = Object.values(report.rows).sort((a, b) =>
-        b.total - a.total || a.defectName.localeCompare(b.defectName)
+        Number(a.stageNumber || 0) - Number(b.stageNumber || 0) ||
+        a.stageName.localeCompare(b.stageName) ||
+        a.partName.localeCompare(b.partName) ||
+        a.defectName.localeCompare(b.defectName)
       );
       report.processRows = Object.values(report.processRows).sort((a, b) =>
-        a.partName.localeCompare(b.partName) || a.processName.localeCompare(b.processName)
+        Number(a.stageNumber || 0) - Number(b.stageNumber || 0) ||
+        a.stageName?.localeCompare(b.stageName || '') ||
+        a.processName.localeCompare(b.processName) ||
+        a.partName.localeCompare(b.partName)
       );
     }
 
