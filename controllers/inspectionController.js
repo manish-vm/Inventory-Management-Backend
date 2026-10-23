@@ -469,6 +469,45 @@ const getAvailableCountForStage = async (codes = [], stageNumber) => {
   }, 0);
 };
 
+const getFinalStageAvailability = async (codes = [], stageNumber, stageName) => {
+  const normalizedCodes = codes.filter(Boolean);
+  const queuedCount = normalizedCodes.length
+    ? await getAvailableCountForStage(normalizedCodes, stageNumber)
+    : 0;
+  if (!normalizedCodes.length || !Number.isFinite(Number(stageNumber))) {
+    return { availableCount: queuedCount, inspectionCompleted: false };
+  }
+
+  const products = await Product.find({ code: { $in: normalizedCodes } })
+    .select('numberOfItems')
+    .lean();
+  const configuredQuantity = products.reduce(
+    (sum, product) => sum + Math.max(Number(product.numberOfItems) || 0, 0),
+    0
+  );
+  const availableCount = Math.max(queuedCount, configuredQuantity);
+  const previousInspections = await InspectionFormResponse.find({
+    code: { $in: normalizedCodes },
+    $or: [
+      { finalStage: true, stageNumber: Number(stageNumber) },
+      ...(stageName ? [{ stageName }] : [])
+    ]
+  }).select('acceptedCount rejectedCount reworkCount').lean();
+  const inspectedCount = previousInspections.reduce(
+    (sum, response) => sum
+      + Number(response.acceptedCount || 0)
+      + Number(response.rejectedCount || 0)
+      + Number(response.reworkCount || 0),
+    0
+  );
+  const remainingCount = Math.max(availableCount - inspectedCount, 0);
+
+  return {
+    availableCount: remainingCount,
+    inspectionCompleted: inspectedCount > 0 && remainingCount === 0
+  };
+};
+
 const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, productId, currentStageNumber, finalStage = false }) => {
   const normalizedCodes = codes.filter(Boolean);
   const rolePermission = await getEmployeeRolePermission(employee, productId, finalStage);
@@ -487,11 +526,15 @@ const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, produ
       const assignedStageNumbers = rolePermission?.stageNumbers || [];
       const isAssigned = !isRoleScopedWorker(employee)
         || (rolePermission?.allowed && (finalStage || assignedStageNumbers.length === 0 || assignedStageNumbers.includes(Number(stage.stageNumber))));
-      const availableCount = finalStage
-        ? 999999
-        : normalizedCodes.length
-          ? await getAvailableCountForStage(normalizedCodes, stage.stageNumber)
-          : 0;
+      const availability = finalStage
+        ? await getFinalStageAvailability(normalizedCodes, stage.stageNumber, stage.stageName)
+        : {
+            availableCount: normalizedCodes.length
+              ? await getAvailableCountForStage(normalizedCodes, stage.stageNumber)
+              : 0,
+            inspectionCompleted: false
+          };
+      const availableCount = availability.availableCount;
       const isOpenIntakeStage = Number(stage.stageNumber) === 1;
       return {
         stageNumber: stage.stageNumber,
@@ -505,8 +548,9 @@ const buildEmployeeStageRows = async ({ codes = [], stages = [], employee, produ
         stageType: stage.stageType,
         isCurrent,
         isAssigned,
-        selectable: isAssigned && (finalStage || isOpenIntakeStage || availableCount > 0),
-        availableCount
+        selectable: isAssigned && (finalStage ? availableCount > 0 : isOpenIntakeStage || availableCount > 0),
+        availableCount,
+        inspectionCompleted: availability.inspectionCompleted
       };
     })
   );
@@ -878,7 +922,9 @@ exports.getBatchProductForEmployee = async (req, res) => {
         return res.status(403).json({ message: `This product is currently at ${currentStage.stageName}, which is not assigned to your ${roleLabel}` });
       }
 
-      const availableCount = await getAvailableCountForStage(codes, currentStageNumber);
+      const availableCount = isFinalStage
+        ? (await getFinalStageAvailability(codes, currentStageNumber, currentStage.stageName)).availableCount
+        : await getAvailableCountForStage(codes, currentStageNumber);
 
       await InspectionScanLog.create({
         qrCode: currentQr?._id,
@@ -954,11 +1000,13 @@ exports.getBatchProductForEmployee = async (req, res) => {
     }
     const currentStageNumber = stages[0]?.stageNumber || 1;
     const currentStage = getStageByNumber(stages, currentStageNumber);
-    const availableCount = await getAvailableCountForStage([code], currentStageNumber) ||
-      qrCode?.quantity ||
-      resolvedProduct?.quantity ||
-      resolvedProduct?.stock ||
-      0;
+    const availableCount = isFinalStage
+      ? (await getFinalStageAvailability([code], currentStageNumber, currentStage.stageName)).availableCount
+      : await getAvailableCountForStage([code], currentStageNumber) ||
+        qrCode?.quantity ||
+        resolvedProduct?.quantity ||
+        resolvedProduct?.stock ||
+        0;
 
     await InspectionScanLog.create({
       qrCode: qrCode?._id,
@@ -1177,11 +1225,17 @@ exports.submitBatchInspectionResponse = async (req, res) => {
     const { product, stages } = await resolveProductContext(code, { finalStagesOnly: Boolean(finalStage) });
     const resolvedProductId = product?._id || productId;
     const isOpenIntakeStage = Number(stageNumber) === 1;
-    const stageAvailableCount = await getAvailableCountForStage([code], stageNumber);
+    const stageAvailableCount = finalStage
+      ? (await getFinalStageAvailability([code], stageNumber, stageName)).availableCount
+      : await getAvailableCountForStage([code], stageNumber);
     const hasStageQueue = await ProductStage.exists({ productId: resolvedProductId, stageNumber });
-    const availableCount = hasStageQueue ? stageAvailableCount : Number(qrCode?.quantity || 0);
+    const availableCount = finalStage
+      ? stageAvailableCount
+      : hasStageQueue ? stageAvailableCount : Number(qrCode?.quantity || 0);
     if (total <= 0) return res.status(400).json({ message: 'Enter at least one processed item' });
-    if (!isOpenIntakeStage && !finalStage && total > availableCount) return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
+    if ((finalStage || !isOpenIntakeStage) && total > availableCount) {
+      return res.status(400).json({ message: 'Quantity breakdown cannot exceed available item count' });
+    }
     const stage = getStageByNumber(stages, stageNumber);
     const reportClassification = getInspectionClassification({
       productionLine,
